@@ -50,8 +50,7 @@ _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
 # Seconds to confirm Ended state before recovery/reconnect.
-# Long enough for VLC's http-reconnect to handle segment boundaries.
-_ENDED_CONFIRM = 8.0
+_ENDED_CONFIRM = 1.0
 # Smart buffer: minimum stall threshold (seconds).
 _SMART_MIN_SECS = 8.0
 # Smart buffer: how many seconds of playback to observe for auto-tuning.
@@ -82,8 +81,6 @@ def _media_options(cfg: Config) -> list[str]:
         f":live-caching={cfg.vlc_live_cache}",
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
-        ":http-reconnect=true",
-        ":http-continuous=true",
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
@@ -91,29 +88,30 @@ def _media_options(cfg: Config) -> list[str]:
 
 
 def _upscale_options(preset: str) -> list[str]:
-    """Per-media VLC options for the given upscale preset (fullscreen only)."""
+    """Per-media VLC options for the given upscale preset (fullscreen only).
+
+    Note: we do NOT set :avcodec-hw=none — let VLC use hardware decode
+    and copy frames to CPU for the filter.  Full software decode causes
+    massive frame drops on HD streams.
+    """
     if preset == "lanczos":
         return [
-            ":avcodec-hw=none",
             ":swscale-mode=9",              # Lanczos interpolation
         ]
     if preset == "sharpen_light":
         return [
-            ":avcodec-hw=none",
             ":swscale-mode=9",
             ":video-filter=sharpen",
             ":sharpen-sigma=0.03",
         ]
     if preset == "sharpen_medium":
         return [
-            ":avcodec-hw=none",
             ":swscale-mode=9",
             ":video-filter=sharpen",
             ":sharpen-sigma=0.06",
         ]
     if preset == "sharpen_strong":
         return [
-            ":avcodec-hw=none",
             ":swscale-mode=9",
             ":video-filter=sharpen",
             ":sharpen-sigma=0.12",

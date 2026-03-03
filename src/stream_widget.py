@@ -83,9 +83,10 @@ class StreamWidget(QWidget):
         self._embedded_handle: int = 0
         self._last_embed_time: float = 0.0
 
-        # Frame-drop tracking
+        # Frame-drop tracking (rate-based, resets every window)
         self._frame_drops = 0
         self._last_lost_pics = 0
+        self._drop_window_start: float = time.monotonic()
 
         # Quality selection
         self._variants: list = []
@@ -398,8 +399,15 @@ class StreamWidget(QWidget):
                     if lost > self._last_lost_pics:
                         self._frame_drops += lost - self._last_lost_pics
                         self._last_lost_pics = lost
-                    if self._frame_drops > 0:
+                    # Show drops only while they're happening (rolling 30s window).
+                    elapsed = time.monotonic() - self._drop_window_start
+                    if elapsed >= 30.0:
+                        self._frame_drops = 0
+                        self._drop_window_start = time.monotonic()
+                    if self._frame_drops > 5:
                         self._lbl_drops.setText(f"{self._frame_drops} drops")
+                    else:
+                        self._lbl_drops.setText("")
             except Exception:
                 pass
         try:
