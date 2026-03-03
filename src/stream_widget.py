@@ -268,7 +268,8 @@ class StreamWidget(QWidget):
                     media.add_option(opt)
             self._media = media
             self._player.set_media(media)
-            self.embed_player()
+            if not seamless:
+                self.embed_player()
             if not self._user_paused:
                 self._player.play()
                 self._btn_play.setText("⏸")

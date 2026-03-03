@@ -333,10 +333,29 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         except Exception:
                             break_reason = _REASON_ENDED
                             break
-                        logger.debug("[%s] seamless reconnect (no stop)", name)
-                        attempt = 0
-                        m = _reset_monitor_state()
-                        continue
+                        # Give VLC a moment to transition out of Ended.
+                        await asyncio.sleep(0.3)
+                        new_state = _safe(widget.get_state, default=vlc.State.Error)
+                        if new_state in (vlc.State.Opening, vlc.State.Buffering,
+                                         vlc.State.Playing):
+                            # Seamless reconnect is working — keep started=True
+                            # so no status messages are shown to the user.
+                            logger.debug("[%s] seamless reconnect (no stop)", name)
+                            attempt = 0
+                            m["terminal_ticks"] = 0
+                            m["buffer_ticks"] = 0
+                            m["stall_ticks"] = 0
+                            m["last_time"] = -1
+                            m["last_read_bytes"] = -1
+                            m["read_stall_ticks"] = 0
+                            # Keep started=True, keep learning state.
+                            continue
+                        else:
+                            # set_media+play didn't work, full reconnect.
+                            logger.debug("[%s] seamless failed (state=%s), full reconnect",
+                                         name, new_state)
+                            break_reason = _REASON_ENDED
+                            break
 
                 # ── Ended (never started) or Error ────────────────────────
                 elif state in (vlc.State.Ended, vlc.State.Error):
