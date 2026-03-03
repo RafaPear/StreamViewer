@@ -5,7 +5,7 @@ import math
 
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
-from PyQt6.QtGui import QAction, QCursor
+from PyQt6.QtGui import QAction, QCursor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -220,6 +220,7 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
 
         self._build_menu()
+        self._setup_shortcuts()
 
     # ── Empty-state welcome ───────────────────────────────────────────────────
 
@@ -671,31 +672,29 @@ class MainWindow(QMainWindow):
 
     # ── Keyboard ──────────────────────────────────────────────────────────────
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802
-        key = event.key()
-        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.remove_active()
-        elif ctrl and key == Qt.Key.Key_Up:
-            self._move_stream(-1)
-        elif ctrl and key == Qt.Key.Key_Down:
-            self._move_stream(1)
-        elif key == Qt.Key.Key_Right and self._widgets:
-            self._switch_stream((self._active_index + 1) % len(self._widgets))
-        elif key == Qt.Key.Key_Left and self._widgets:
-            self._switch_stream((self._active_index - 1) % len(self._widgets))
-        elif key == Qt.Key.Key_PageUp:
-            self._page_prev()
-        elif key == Qt.Key.Key_PageDown:
-            self._page_next()
-        elif key == Qt.Key.Key_G:
-            self._toggle_grid()
-        elif key in (Qt.Key.Key_A, Qt.Key.Key_L):
-            self._action_add_source()
-        elif key == Qt.Key.Key_Q:
-            self.close()
-        else:
-            super().keyPressEvent(event)
+    def _setup_shortcuts(self) -> None:
+        """Register global keyboard shortcuts (work even when VLC has focus)."""
+        def sc(key, slot):
+            s = QShortcut(QKeySequence(key), self)
+            s.setContext(Qt.ShortcutContext.WindowShortcut)
+            s.activated.connect(slot)
+            return s
+
+        sc(Qt.Key.Key_Delete, self.remove_active)
+        sc(Qt.Key.Key_Backspace, self.remove_active)
+        sc(Qt.Key.Key_Right, lambda: self._widgets and self._switch_stream(
+            (self._active_index + 1) % len(self._widgets)))
+        sc(Qt.Key.Key_Left, lambda: self._widgets and self._switch_stream(
+            (self._active_index - 1) % len(self._widgets)))
+        sc(Qt.Key.Key_G, self._toggle_grid)
+        sc(Qt.Key.Key_A, self._action_add_source)
+        sc(Qt.Key.Key_L, self._action_add_source)
+        sc(Qt.Key.Key_PageUp, self._page_prev)
+        sc(Qt.Key.Key_PageDown, self._page_next)
+        sc(QKeySequence(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Up),
+           lambda: self._move_stream(-1))
+        sc(QKeySequence(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Down),
+           lambda: self._move_stream(1))
 
     # ── Close / save session ──────────────────────────────────────────────────
 
