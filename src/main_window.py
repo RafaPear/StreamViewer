@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -866,9 +867,17 @@ class MainWindow(QMainWindow):
         ch = self._channels[self._active_index]
         for f in self._cfg.favourites:
             if f.get("url") == ch.url:
-                return  # already saved
-        self._cfg.favourites.append(ch.to_dict())
+                self.statusBar().showMessage("Already in favourites", 2000)
+                return
+        group = self._ask_fav_group()
+        if group is None:
+            return
+        d = ch.to_dict()
+        d["group"] = group
+        self._cfg.favourites.append(d)
         save_config(self._cfg)
+        self.statusBar().showMessage(
+            f"Added to favourites" + (f" ({group})" if group else ""), 2000)
 
     def _action_manage_favourites(self) -> None:
         dlg = FavouritesDialog(self._cfg.favourites, self._cfg.saved_playlists, self)
@@ -887,6 +896,16 @@ class MainWindow(QMainWindow):
                     asyncio.ensure_future(self._load_playlist_async(pl["url"]))
 
     # ── Grid presets ─────────────────────────────────────────────────────────
+
+    def _ask_fav_group(self) -> str | None:
+        """Prompt user to pick or type a group name. Returns '' for ungrouped, None if cancelled."""
+        existing = sorted({f.get("group", "") for f in self._cfg.favourites} - {""})
+        group, ok = QInputDialog.getItem(
+            self, "Favourite Group", "Assign to group (optional):",
+            [""] + existing, 0, True)
+        if not ok:
+            return None
+        return group.strip()
 
     def _action_grid_presets(self) -> None:
         current_channels = [ch.to_dict() for ch in self._channels] if self._channels else None
@@ -969,9 +988,17 @@ class MainWindow(QMainWindow):
         ch = self._channels[index]
         for f in self._cfg.favourites:
             if f.get("url") == ch.url:
+                self.statusBar().showMessage("Already in favourites", 2000)
                 return
-        self._cfg.favourites.append(ch.to_dict())
+        group = self._ask_fav_group()
+        if group is None:
+            return
+        d = ch.to_dict()
+        d["group"] = group
+        self._cfg.favourites.append(d)
         save_config(self._cfg)
+        self.statusBar().showMessage(
+            f"Added to favourites" + (f" ({group})" if group else ""), 2000)
 
     def _detach_stream(self, index: int) -> None:
         if index < 0 or index >= len(self._widgets):

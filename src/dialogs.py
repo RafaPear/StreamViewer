@@ -3,6 +3,7 @@
 from PyQt6.QtCore import Qt, QTimer, QAbstractListModel, QModelIndex, QSortFilterProxyModel
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -10,6 +11,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -18,6 +20,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -487,16 +491,38 @@ class FavouritesDialog(QDialog):
 
     # ── Streams tab ──────────────────────────────────────────────────────────
 
+    _GROUP_UNGROUPED = "(Ungrouped)"
+
     def _streams_tab(self, favourites: list[dict]) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        self._fav_list = QListWidget()
-        self._fav_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        for fav in favourites:
-            self._add_fav_item(Channel.from_dict(fav))
-        layout.addWidget(self._fav_list)
+        # Group filter combo
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Group:"))
+        self._group_filter = QComboBox()
+        self._group_filter.addItem("All")
+        self._group_filter.currentTextChanged.connect(self._apply_group_filter)
+        filter_row.addWidget(self._group_filter, stretch=1)
+        layout.addLayout(filter_row)
 
+        self._fav_tree = QTreeWidget()
+        self._fav_tree.setHeaderHidden(True)
+        self._fav_tree.setRootIsDecorated(True)
+        self._fav_tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
+        self._fav_tree.setIndentation(16)
+        layout.addWidget(self._fav_tree)
+
+        # Populate groups
+        self._group_items: dict[str, QTreeWidgetItem] = {}
+        for fav in favourites:
+            group = fav.get("group", "")
+            ch = Channel.from_dict(fav)
+            self._add_fav_item(ch, group)
+
+        self._fav_tree.expandAll()
+
+        # Buttons
         btn_row = QHBoxLayout()
         btn_up = QPushButton("▲ Up")
         btn_up.clicked.connect(self._fav_move_up)
@@ -504,46 +530,156 @@ class FavouritesDialog(QDialog):
         btn_down.clicked.connect(self._fav_move_down)
         btn_remove = QPushButton("✕ Remove")
         btn_remove.clicked.connect(self._fav_remove)
+        btn_group = QPushButton("📁 Set Group…")
+        btn_group.clicked.connect(self._fav_set_group)
         btn_add = QPushButton("+ Add…")
         btn_add.clicked.connect(self._fav_add)
         btn_row.addWidget(btn_up)
         btn_row.addWidget(btn_down)
         btn_row.addWidget(btn_remove)
+        btn_row.addWidget(btn_group)
         btn_row.addStretch()
         btn_row.addWidget(btn_add)
         layout.addLayout(btn_row)
         return w
 
-    def _add_fav_item(self, ch: Channel) -> None:
-        item = QListWidgetItem(f"★ {ch.display_name()}  —  {ch.url}")
+    def _get_or_create_group(self, group: str) -> QTreeWidgetItem:
+        """Get or create a top-level group item."""
+        key = group or self._GROUP_UNGROUPED
+        if key not in self._group_items:
+            gi = QTreeWidgetItem(self._fav_tree, [f"📁 {key}"])
+            gi.setFlags(gi.flags() | Qt.ItemFlag.ItemIsAutoTristate
+                        | Qt.ItemFlag.ItemIsUserCheckable)
+            gi.setCheckState(0, Qt.CheckState.Checked)
+            gi.setData(0, Qt.ItemDataRole.UserRole, {"_group": key})
+            gi.setExpanded(True)
+            self._group_items[key] = gi
+            # Update filter combo
+            if self._group_filter.findText(key) < 0:
+                self._group_filter.addItem(key)
+        return self._group_items[key]
+
+    def _add_fav_item(self, ch: Channel, group: str = "") -> None:
+        parent = self._get_or_create_group(group)
+        item = QTreeWidgetItem(parent, [f"★ {ch.display_name()}  —  {ch.url}"])
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(Qt.CheckState.Checked)
-        item.setData(Qt.ItemDataRole.UserRole, ch.to_dict())
-        self._fav_list.addItem(item)
+        item.setCheckState(0, Qt.CheckState.Checked)
+        d = ch.to_dict()
+        d["group"] = group
+        item.setData(0, Qt.ItemDataRole.UserRole, d)
+
+    def _selected_fav_item(self) -> QTreeWidgetItem | None:
+        items = self._fav_tree.selectedItems()
+        if not items:
+            return None
+        item = items[0]
+        # Don't return group headers
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if data and "_group" in data:
+            return None
+        return item
 
     def _fav_move_up(self) -> None:
-        row = self._fav_list.currentRow()
-        if row > 0:
-            item = self._fav_list.takeItem(row)
-            self._fav_list.insertItem(row - 1, item)
-            self._fav_list.setCurrentRow(row - 1)
+        item = self._selected_fav_item()
+        if not item:
+            return
+        parent = item.parent()
+        if not parent:
+            return
+        idx = parent.indexOfChild(item)
+        if idx > 0:
+            parent.takeChild(idx)
+            parent.insertChild(idx - 1, item)
+            self._fav_tree.setCurrentItem(item)
 
     def _fav_move_down(self) -> None:
-        row = self._fav_list.currentRow()
-        if 0 <= row < self._fav_list.count() - 1:
-            item = self._fav_list.takeItem(row)
-            self._fav_list.insertItem(row + 1, item)
-            self._fav_list.setCurrentRow(row + 1)
+        item = self._selected_fav_item()
+        if not item:
+            return
+        parent = item.parent()
+        if not parent:
+            return
+        idx = parent.indexOfChild(item)
+        if idx < parent.childCount() - 1:
+            parent.takeChild(idx)
+            parent.insertChild(idx + 1, item)
+            self._fav_tree.setCurrentItem(item)
 
     def _fav_remove(self) -> None:
-        row = self._fav_list.currentRow()
-        if row >= 0:
-            self._fav_list.takeItem(row)
+        items = self._fav_tree.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if data and "_group" in data:
+            # Removing a group — remove all children too
+            key = data["_group"]
+            parent = item
+            root = self._fav_tree.invisibleRootItem()
+            root.removeChild(parent)
+            self._group_items.pop(key, None)
+            idx = self._group_filter.findText(key)
+            if idx >= 0:
+                self._group_filter.removeItem(idx)
+        else:
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
+                # Remove empty group (except Ungrouped)
+                if parent.childCount() == 0:
+                    key = parent.data(0, Qt.ItemDataRole.UserRole).get("_group", "")
+                    root = self._fav_tree.invisibleRootItem()
+                    root.removeChild(parent)
+                    self._group_items.pop(key, None)
+                    idx = self._group_filter.findText(key)
+                    if idx >= 0:
+                        self._group_filter.removeItem(idx)
+
+    def _fav_set_group(self) -> None:
+        item = self._selected_fav_item()
+        if not item:
+            return
+        existing = sorted(k for k in self._group_items if k != self._GROUP_UNGROUPED)
+        group, ok = QInputDialog.getItem(
+            self, "Set Group", "Group name (or type a new one):",
+            [""] + existing, 0, True)
+        if not ok:
+            return
+        group = group.strip()
+        # Move item to new group
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        old_parent = item.parent()
+        if old_parent:
+            old_parent.removeChild(item)
+            # Clean up empty old group
+            if old_parent.childCount() == 0:
+                old_key = old_parent.data(0, Qt.ItemDataRole.UserRole).get("_group", "")
+                root = self._fav_tree.invisibleRootItem()
+                root.removeChild(old_parent)
+                self._group_items.pop(old_key, None)
+                idx = self._group_filter.findText(old_key)
+                if idx >= 0:
+                    self._group_filter.removeItem(idx)
+        data["group"] = group
+        ch = Channel.from_dict(data)
+        self._add_fav_item(ch, group)
 
     def _fav_add(self) -> None:
         dlg = AddStreamDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._add_fav_item(dlg.result_channel())
+            existing = sorted(k for k in self._group_items if k != self._GROUP_UNGROUPED)
+            group, ok = QInputDialog.getItem(
+                self, "Group", "Assign to group (optional):",
+                [""] + existing, 0, True)
+            group = group.strip() if ok else ""
+            self._add_fav_item(dlg.result_channel(), group)
+
+    def _apply_group_filter(self, text: str) -> None:
+        root = self._fav_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            gi = root.child(i)
+            key = gi.data(0, Qt.ItemDataRole.UserRole).get("_group", "")
+            gi.setHidden(text != "All" and key != text)
 
     # ── Playlists tab ────────────────────────────────────────────────────────
 
@@ -591,17 +727,29 @@ class FavouritesDialog(QDialog):
         return self._tabs.currentIndex()
 
     def all_favourites(self) -> list[dict]:
-        return [
-            self._fav_list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self._fav_list.count())
-        ]
+        result = []
+        root = self._fav_tree.invisibleRootItem()
+        for gi in range(root.childCount()):
+            group_item = root.child(gi)
+            for ci in range(group_item.childCount()):
+                child = group_item.child(ci)
+                data = child.data(0, Qt.ItemDataRole.UserRole)
+                if data:
+                    result.append(data)
+        return result
 
     def checked_channels(self) -> list[Channel]:
-        return [
-            Channel.from_dict(self._fav_list.item(i).data(Qt.ItemDataRole.UserRole))
-            for i in range(self._fav_list.count())
-            if self._fav_list.item(i).checkState() == Qt.CheckState.Checked
-        ]
+        result = []
+        root = self._fav_tree.invisibleRootItem()
+        for gi in range(root.childCount()):
+            group_item = root.child(gi)
+            for ci in range(group_item.childCount()):
+                child = group_item.child(ci)
+                if child.checkState(0) == Qt.CheckState.Checked:
+                    data = child.data(0, Qt.ItemDataRole.UserRole)
+                    if data:
+                        result.append(Channel.from_dict(data))
+        return result
 
     def all_playlists(self) -> list[dict]:
         return [
