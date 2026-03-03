@@ -1002,6 +1002,11 @@ class MainWindow(QMainWindow):
             self._cursor_timer.stop()
             self._show_overlay()
             self.statusBar().show()
+        # Remove from layout and clear parent before reparenting to avoid
+        # "QWidgetWindow must be a top level window" warnings.
+        self._grid_layout.removeWidget(w)
+        self._single_layout.removeWidget(w)
+        w.setParent(None)  # type: ignore[arg-type]
         win = _DetachedStreamWindow(w)
         win.reattach_requested.connect(self._reattach_stream)
         self._detached_windows[index] = win

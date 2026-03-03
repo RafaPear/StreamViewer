@@ -38,6 +38,12 @@ _BUFFER_TOLERANCE = 30.0
 _STALL_TIMEOUT = 20.0
 # Poll interval in seconds.
 _POLL_INTERVAL = 0.2
+# How long to wait after an embed (reparent) before monitoring state.
+_EMBED_GRACE = 3.0
+# Quick-restart: max attempts to call play() on Ended before full reconnect.
+_QUICK_RESTART_MAX = 3
+# Quick-restart: seconds to wait for Playing state after play().
+_QUICK_RESTART_WAIT = 3.0
 
 
 def _media_options(cfg: Config) -> list[str]:
@@ -65,17 +71,6 @@ def _safe(fn, *args, default=None):
         return default
 
 
-async def _countdown(widget, msg: str, seconds: float, level: str = "warn") -> None:
-    """Show a countdown on the widget overlay before retrying."""
-    remaining = int(seconds)
-    while remaining > 0:
-        if widget._released or widget._restart_requested:
-            return
-        _safe(widget.show_status, f"{msg} (retrying in {remaining}s)", level)
-        await asyncio.sleep(1)
-        remaining -= 1
-
-
 async def capture_loop(widget, loop, cfg: Config) -> None:
     """
     Per-stream async loop: start VLC playback, monitor state, retry on failure.
@@ -83,7 +78,6 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
     Parameters match the old ffmpeg-based signature so MainWindow.set_loop()
     works unchanged.
     """
-    retry_delay = cfg.retry_delay
     attempt = 0
     max_retries = cfg.max_retries  # 0 = unlimited
     name = widget.channel.display_name()
@@ -108,9 +102,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
             # Brief pause before (re)starting – gives VLC time to clean up
             # the previous player state and prevents rapid stop→play segfaults.
-            # Stagger restarts across streams to avoid simultaneous VLC calls.
+            # Stagger across streams to avoid simultaneous VLC calls.
             _safe(widget.stop)
-            jitter = widget.index * 0.4
+            jitter = widget.index * 0.3
             await asyncio.sleep(0.5 + jitter)
 
             options = _media_options(cfg)
@@ -121,8 +115,8 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 widget.play_url(url, options)
             except Exception as exc:
                 logger.error("[%s] failed to start playback: %s", name, exc)
-                await _countdown(widget, "Playback error", retry_delay, "error")
-                retry_delay = min(retry_delay * 2, cfg.max_retry_delay)
+                _safe(widget.show_status, "Playback error", "error")
+                await asyncio.sleep(2)
                 continue
 
             logger.info("[%s] starting VLC playback (attempt %d)", name, attempt)
@@ -130,16 +124,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             started = False
             was_active = widget._active
             grace_ticks = 0
-            # Connection timeout: ticks spent in non-Playing state before ever playing.
             connect_ticks = 0
-            # Mid-stream buffering: ticks spent buffering after stream was playing.
             buffer_ticks = 0
-            # Stall detection: ticks of Playing with no time progress.
             stall_ticks = 0
             last_time = -1
-            # Consecutive ticks in a terminal state (Ended/Error).
-            # VLC can briefly flash Ended between HLS segments; only act
-            # when the state persists.
             terminal_ticks = 0
 
             while True:
@@ -150,15 +138,13 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     logger.debug("[%s] restart requested", name)
                     break
 
-                # Toggle audio when active state changes
+                # Toggle audio when active state changes.
                 if widget._active != was_active:
                     _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                     was_active = widget._active
 
-                # Skip state-based error detection during layout transitions.
-                # Reparenting the widget gives VLC a new rendering surface which
-                # can briefly flash non-Playing states.
-                if time.monotonic() - widget._last_embed_time < 3.0:
+                # Skip state monitoring during layout transitions (reparent).
+                if time.monotonic() - widget._last_embed_time < _EMBED_GRACE:
                     grace_ticks += 1
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
@@ -171,21 +157,15 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     if not started:
                         started = True
                         _safe(widget.hide_status)
-                        # Reapply audio state now that VLC audio subsystem is live,
-                        # and schedule a delayed reapply to catch late initialisation.
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                         QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
-                        # Preload quality variants in background.
                         _safe(widget.prefetch_variants)
-                        retry_delay = cfg.retry_delay
-                        attempt = 0  # reset on successful playback
+                        attempt = 0
                         logger.info("[%s] playback started", name)
 
-                    # Reset counters — stream is healthy.
                     buffer_ticks = 0
                     terminal_ticks = 0
 
-                    # Stall detection: check if media time is advancing.
                     cur_time = _safe(lambda: widget._player.get_time(), default=-1)
                     if cur_time is not None and cur_time == last_time:
                         stall_ticks += 1
@@ -200,7 +180,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         break
 
                 elif state == vlc.State.Buffering:
-                    terminal_ticks = 0  # not terminal
+                    terminal_ticks = 0
                     if started:
                         buffer_ticks += 1
                         secs = buffer_ticks * _POLL_INTERVAL
@@ -215,12 +195,26 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     else:
                         _safe(widget.show_status, "Buffering...", "info")
 
+                elif state == vlc.State.Ended and started:
+                    # HLS live streams can briefly report Ended between
+                    # playlist refreshes.  Try a quick stop→play before
+                    # doing a full reconnect.
+                    terminal_ticks += 1
+                    if terminal_ticks * _POLL_INTERVAL >= 2.0:
+                        logger.info("[%s] stream ended — attempting quick restart", name)
+                        recovered = await _quick_restart(widget, name)
+                        if recovered:
+                            terminal_ticks = 0
+                            stall_ticks = 0
+                            # Continue monitoring — stream is back.
+                        else:
+                            _safe(widget.show_status, "Stream ended", "info")
+                            break
+
                 elif state in (vlc.State.Ended, vlc.State.Error):
-                    if started or grace_ticks > 50:  # 10 s grace for startup
+                    if started or grace_ticks > 50:
                         terminal_ticks += 1
-                        # Require 5 s of consecutive terminal state before acting.
-                        # VLC can briefly flash Ended between HLS segments.
-                        if terminal_ticks * _POLL_INTERVAL >= 5.0:
+                        if terminal_ticks * _POLL_INTERVAL >= 3.0:
                             kind = "ended" if state == vlc.State.Ended else "error"
                             logger.warning("[%s] stream %s (confirmed after %.1fs)",
                                            name, kind, terminal_ticks * _POLL_INTERVAL)
@@ -231,7 +225,6 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             break
 
                 else:
-                    # NothingSpecial, Opening, Stopped, etc. — not terminal.
                     terminal_ticks = 0
 
                 # Connection timeout (never reached Playing state).
@@ -250,19 +243,44 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 grace_ticks += 1
                 await asyncio.sleep(_POLL_INTERVAL)
 
-            # ── Clean stop + back-off before retry ───────────────────────────
+            # ── Immediate reconnect (no countdown) ───────────────────────────
             _safe(widget.stop)
 
             if widget._restart_requested:
-                attempt = 0  # user-triggered restart resets counter
-                retry_delay = cfg.retry_delay
+                attempt = 0
                 continue
 
-            await _countdown(widget, "Waiting to reconnect", retry_delay, "warn")
-            retry_delay = min(retry_delay * 2, cfg.max_retry_delay)
+            # If the stream was playing before it dropped, reset the attempt
+            # counter so the next reconnect is treated as fresh.
+            if started:
+                attempt = 0
 
     except asyncio.CancelledError:
         try:
             widget.stop()
         except Exception:
             pass
+
+
+async def _quick_restart(widget, name: str) -> bool:
+    """Try stop→play on the existing media.  Returns True if Playing resumes."""
+    for i in range(_QUICK_RESTART_MAX):
+        if widget._released or widget._restart_requested:
+            return False
+        logger.debug("[%s] quick restart attempt %d", name, i + 1)
+        _safe(widget.stop)
+        await asyncio.sleep(0.3)
+        try:
+            widget._player.play()
+        except Exception:
+            return False
+        # Wait for Playing state.
+        for _ in range(int(_QUICK_RESTART_WAIT / _POLL_INTERVAL)):
+            await asyncio.sleep(_POLL_INTERVAL)
+            if widget._released or widget._restart_requested:
+                return False
+            s = _safe(widget.get_state, default=vlc.State.Error)
+            if s == vlc.State.Playing:
+                logger.info("[%s] quick restart succeeded", name)
+                return True
+    return False

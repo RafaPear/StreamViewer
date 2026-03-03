@@ -6,3 +6,5 @@ dist/
 .venv/
 logs/
 config.json
+.DS_Store
+.DS_Store

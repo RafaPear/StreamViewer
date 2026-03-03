@@ -41,7 +41,7 @@ def check_for_update() -> dict | None:
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
     except Exception as exc:
-        logger.warning("Update check failed: %s", exc)
+        logger.debug("Update check failed: %s", exc)
         return None
 
     tag = data.get("tag_name", "").lstrip("v")
