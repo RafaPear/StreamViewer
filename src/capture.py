@@ -181,7 +181,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         started = True
                         _safe(widget.hide_status)
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
-                        QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
+                        # VLC audio subsystem may not be ready yet; reapply later.
+                        QTimer.singleShot(500, lambda w=widget: _safe(w.reapply_audio))
+                        QTimer.singleShot(1500, lambda w=widget: _safe(w.reapply_audio))
                         _safe(widget.prefetch_variants)
                         retry_delay = cfg.retry_delay
                         attempt = 0

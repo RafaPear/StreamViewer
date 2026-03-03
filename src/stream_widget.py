@@ -498,6 +498,10 @@ class StreamWidget(QWidget):
         self._update_border()
         if self._cfg.audio_enabled:
             self.set_audio_active(active)
+            # VLC may not honor mute changes immediately; reapply after delay.
+            if active:
+                QTimer.singleShot(300, self.reapply_audio)
+                QTimer.singleShot(1000, self.reapply_audio)
 
     def request_restart(self, force: bool = False) -> None:
         if not force:
