@@ -47,10 +47,16 @@ _EMBED_GRACE = 3.0
 _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
-# Seconds to confirm Ended state before acting (filters transient flickers).
+# Seconds to confirm Ended state before attempting quick play().
 _ENDED_CONFIRM = 0.6
-# Smart buffer: seconds of no new bytes before proactive reconnect.
-_SMART_STALL_SECS = 3.0
+# Quick play: seconds to wait for Playing state after stop→play on Ended.
+_QUICK_PLAY_WAIT = 2.0
+# Smart buffer: minimum stall threshold (seconds).
+_SMART_MIN_SECS = 8.0
+# Smart buffer: how many seconds of playback to observe for auto-tuning.
+_SMART_LEARN_SECS = 30.0
+# Smart buffer: multiplier applied to observed max data gap.
+_SMART_GAP_MULT = 2.5
 
 # Break-reason flags (why the inner monitoring loop exited).
 _REASON_RESTART = "restart"      # user / settings triggered restart
@@ -124,6 +130,31 @@ def _build_options(widget, cfg: Config) -> tuple[str, list[str]]:
     return url, options
 
 
+async def _quick_play(widget, name: str) -> bool:
+    """Stop→play on the existing media.  Returns True if Playing resumes.
+
+    Much faster than a full reconnect — avoids black screen because VLC
+    keeps the last frame visible until new data arrives.
+    """
+    if widget._released or widget._restart_requested:
+        return False
+    _safe(widget.stop)
+    await asyncio.sleep(0.1)
+    try:
+        widget._player.play()
+    except Exception:
+        return False
+    for _ in range(int(_QUICK_PLAY_WAIT / _POLL_INTERVAL)):
+        await asyncio.sleep(_POLL_INTERVAL)
+        if widget._released or widget._restart_requested:
+            return False
+        s = _safe(widget.get_state, default=vlc.State.Error)
+        if s == vlc.State.Playing:
+            logger.info("[%s] quick play succeeded", name)
+            return True
+    return False
+
+
 async def capture_loop(widget, loop, cfg: Config) -> None:
     """
     Per-stream async loop: start VLC playback, monitor state, retry on failure.
@@ -188,10 +219,14 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             last_time = -1
             terminal_ticks = 0
             break_reason = _REASON_ERROR
-            # Smart buffer: track network read_bytes to detect stalls early.
+            # Smart buffer state.
             smart = cfg.smart_buffer
             last_read_bytes = -1
             read_stall_ticks = 0
+            play_start_mono = 0.0       # monotonic time when Playing started
+            max_data_gap = 0.0          # longest observed gap between data bursts
+            learning = True             # still measuring burst interval
+            smart_threshold = _SMART_MIN_SECS  # auto-tuned after learning phase
 
             # ── Inner monitoring loop ─────────────────────────────────────
             while True:
@@ -222,6 +257,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 if state == vlc.State.Playing:
                     if not started:
                         started = True
+                        play_start_mono = time.monotonic()
                         _safe(widget.hide_status)
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                         QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
@@ -246,25 +282,49 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         break_reason = _REASON_ERROR
                         break
 
-                    # Smart buffer: detect network stall via read_bytes.
-                    # If no new bytes arrive for _SMART_STALL_SECS while
-                    # VLC still reports Playing, the connection is dying —
-                    # reconnect now while the buffer still has data.
+                    # ── Smart buffer: auto-tuned network stall detection ──
                     if smart and widget._media is not None:
                         try:
                             stats = vlc.MediaStats()
                             if widget._media.get_stats(stats):
                                 rb = stats.read_bytes
-                                if rb == last_read_bytes and last_read_bytes >= 0:
-                                    read_stall_ticks += 1
+                                if last_read_bytes >= 0:
+                                    if rb == last_read_bytes:
+                                        read_stall_ticks += 1
+                                        gap = read_stall_ticks * _POLL_INTERVAL
+                                        # During learning phase, record the
+                                        # longest gap between data bursts.
+                                        if learning:
+                                            max_data_gap = max(max_data_gap, gap)
+                                    else:
+                                        read_stall_ticks = 0
                                 else:
                                     read_stall_ticks = 0
                                 last_read_bytes = rb
-                                if read_stall_ticks * _POLL_INTERVAL >= _SMART_STALL_SECS:
+
+                                # End learning phase after _SMART_LEARN_SECS.
+                                if learning and (time.monotonic() - play_start_mono) >= _SMART_LEARN_SECS:
+                                    learning = False
+                                    smart_threshold = max(
+                                        max_data_gap * _SMART_GAP_MULT,
+                                        _SMART_MIN_SECS,
+                                    )
+                                    logger.debug(
+                                        "[%s] smart buffer: learned max_gap=%.1fs → threshold=%.1fs",
+                                        name, max_data_gap, smart_threshold,
+                                    )
+
+                                # Only trigger when BOTH bytes AND playback
+                                # time have stalled (avoids false positives
+                                # when VLC still has plenty of buffer).
+                                data_stall_secs = read_stall_ticks * _POLL_INTERVAL
+                                if (data_stall_secs >= smart_threshold
+                                        and stall_ticks > 0):
                                     logger.info(
-                                        "[%s] smart buffer: network stall (no new bytes for %.1fs), "
-                                        "reconnecting proactively",
-                                        name, read_stall_ticks * _POLL_INTERVAL,
+                                        "[%s] smart buffer: network+playback stall "
+                                        "(%.1fs no bytes, %.1fs no progress), reconnecting",
+                                        name, data_stall_secs,
+                                        stall_ticks * _POLL_INTERVAL,
                                     )
                                     break_reason = _REASON_ENDED
                                     break
@@ -296,6 +356,14 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 elif state == vlc.State.Ended and started:
                     terminal_ticks += 1
                     if terminal_ticks * _POLL_INTERVAL >= _ENDED_CONFIRM:
+                        # Try quick play() first — avoids black screen.
+                        recovered = await _quick_play(widget, name)
+                        if recovered:
+                            terminal_ticks = 0
+                            stall_ticks = 0
+                            read_stall_ticks = 0
+                            continue
+                        # Quick play failed — seamless full reconnect.
                         logger.info("[%s] stream ended — seamless reconnect", name)
                         break_reason = _REASON_ENDED
                         break
