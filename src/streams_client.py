@@ -234,14 +234,18 @@ def main() -> None:
         except asyncio.CancelledError:
             pass
         finally:
+            # Cancel all capture tasks and wait at most 3 s for them to stop.
             tasks = list(window._tasks.values())
             for t in tasks:
                 t.cancel()
             if tasks:
                 try:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                except RuntimeError:
-                    pass  # event loop already stopped by qasync
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=3.0,
+                    )
+                except (asyncio.TimeoutError, RuntimeError):
+                    pass
             # Ordered release: players first, then VLC instance.
             for w in window._widgets:
                 w.release()

@@ -696,16 +696,15 @@ class MainWindow(QMainWindow):
     # ── Close / save session ──────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        # Hide window immediately for snappy UX.
+        self.hide()
+
         # Close all detached windows.
         for win in list(self._detached_windows.values()):
             win.close()
         self._detached_windows.clear()
 
-        # Mark all widgets as released so capture_loop coroutines exit their
-        # polling loops promptly; then cancel the tasks.  Do NOT call
-        # w.release() here – the capture_loop may still be mid-iteration.
-        # The async _run() finally block in streams_client.py handles ordered
-        # shutdown: cancel tasks → gather → release players → release instance.
+        # Mark all widgets as released so capture_loop coroutines exit promptly.
         for w in self._widgets:
             w._released = True
         for t in self._tasks.values():
