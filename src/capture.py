@@ -50,7 +50,9 @@ def _media_options(cfg: Config) -> list[str]:
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
     if cfg.upscale_enabled:
-        opts.append(":swscale-mode=9")
+        opts.append(":swscale-mode=9")           # Lanczos interpolation
+        opts.append(":video-filter=sharpen")      # sharpening filter
+        opts.append(":sharpen-sigma=0.04")        # subtle sharpening
     return opts
 
 

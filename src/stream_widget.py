@@ -320,6 +320,23 @@ class StreamWidget(QWidget):
         except Exception:
             pass
 
+    # ── Runtime upscale / enhance ────────────────────────────────────────────
+
+    def set_upscale(self, enabled: bool) -> None:
+        """Toggle VLC video adjust filter for visual enhancement in fullscreen."""
+        if self._released:
+            return
+        try:
+            if enabled:
+                self._player.video_set_adjust_int(vlc.VideoAdjustOption.Enable, 1)
+                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Contrast, 1.05)
+                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Gamma, 0.95)
+                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Saturation, 1.05)
+            else:
+                self._player.video_set_adjust_int(vlc.VideoAdjustOption.Enable, 0)
+        except Exception:
+            pass
+
     # ── Status display ───────────────────────────────────────────────────────
 
     _STATUS_STYLE = "color: #ccc; background: rgba(0,0,0,180);"

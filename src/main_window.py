@@ -5,7 +5,7 @@ import math
 
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -289,19 +289,33 @@ class MainWindow(QMainWindow):
     # ── Cursor / controls auto-hide ──────────────────────────────────────────
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if event.type() == QEvent.Type.MouseMove and not self._grid_mode:
-            # Skip overlay toggling while a popup menu is active to avoid
-            # showing/hiding the controls bar mid-QMenu.exec() (crash).
-            if QApplication.activePopupWidget() is not None:
-                return False
-            # Always restore cursor immediately on any mouse movement.
-            self._show_overlay()
-            # Only auto-hide when mouse is over the active stream widget.
-            if self._is_mouse_over_video(event):
-                self._cursor_timer.start()
-            else:
+        etype = event.type()
+        if not self._grid_mode:
+            # Restore cursor when the mouse leaves the window or the window
+            # deactivates (e.g. user clicks on macOS system menu bar).
+            if etype in (QEvent.Type.Leave, QEvent.Type.WindowDeactivate) and obj is self:
+                if self._cursor_hidden:
+                    self._show_overlay()
                 self._cursor_timer.stop()
+                return False
+            if etype == QEvent.Type.MouseMove:
+                if QApplication.activePopupWidget() is not None:
+                    return False
+                # Always restore cursor immediately on any mouse movement.
+                self._show_overlay()
+                # Only auto-hide when mouse is over the active stream widget.
+                if self._is_mouse_over_video(event):
+                    self._cursor_timer.start()
+                else:
+                    self._cursor_timer.stop()
         return False
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        """Restore cursor when the mouse leaves the window entirely."""
+        if self._cursor_hidden:
+            self._show_overlay()
+        self._cursor_timer.stop()
+        super().leaveEvent(event)
 
     def _is_mouse_over_video(self, event) -> bool:
         """Return True when the mouse is inside the active stream widget."""
@@ -321,6 +335,12 @@ class MainWindow(QMainWindow):
         if QApplication.activePopupWidget() is not None:
             self._cursor_timer.start()
             return
+        # Re-check that the mouse is still over the video widget.
+        if 0 <= self._active_index < len(self._widgets):
+            w = self._widgets[self._active_index]
+            pos = w.mapFromGlobal(QCursor.pos())
+            if not w.rect().contains(pos):
+                return
         if not self._cursor_hidden:
             self._cursor_hidden = True
             QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
@@ -877,6 +897,9 @@ class MainWindow(QMainWindow):
             self._tb_grid.setChecked(True)
             self._cursor_timer.stop()
             self._show_overlay()
+            # Disable upscale enhance when leaving fullscreen.
+            if 0 <= self._active_index < len(self._widgets):
+                self._widgets[self._active_index].set_upscale(False)
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
@@ -1019,6 +1042,8 @@ class MainWindow(QMainWindow):
         target.embed_player()
         target.set_border_visible(False)  # no border in single-stream view
         target.set_controls_visible(False)  # hide controls; shown on hover
+        if self._cfg.upscale_enabled:
+            target.set_upscale(True)
         self.statusBar().hide()
         self._cursor_timer.start()  # start hide-cursor countdown
         self._stack.setCurrentIndex(0)
@@ -1030,6 +1055,9 @@ class MainWindow(QMainWindow):
         if self._grid_mode:
             self._cursor_timer.stop()
             self._show_overlay()
+            # Disable upscale enhance when leaving fullscreen.
+            if 0 <= self._active_index < len(self._widgets):
+                self._widgets[self._active_index].set_upscale(False)
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
