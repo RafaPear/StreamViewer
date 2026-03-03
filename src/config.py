@@ -15,11 +15,11 @@ def _app_dir() -> Path:
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable).resolve()
         if sys.platform == "darwin":
-            # .app/Contents/MacOS/StreamsClient → .app's parent directory
+            # .app/Contents/MacOS/StreamsClient → .app/Contents/Resources
             p = exe
             while p.suffix != ".app" and p != p.parent:
                 p = p.parent
-            return p.parent
+            return p / "Contents" / "Resources"
         # Windows: directory containing the exe
         return exe.parent
     return Path(__file__).resolve().parent.parent
