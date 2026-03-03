@@ -797,6 +797,11 @@ class MainWindow(QMainWindow):
                 "Playback settings saved (applies on next reconnect)", 4000
             )
 
+        # Apply upscale change immediately if in single view.
+        if not self._grid_mode and old["upscale_preset"] != self._cfg.upscale_preset:
+            if 0 <= self._active_index < len(self._widgets):
+                self._widgets[self._active_index].set_upscale(self._cfg.upscale_preset)
+
         if self._grid_mode:
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
