@@ -193,8 +193,11 @@ def main() -> None:
         channels = [Channel.from_dict(d) for d in cfg.last_channels]
 
     else:
-        channels = _load_and_pick(cfg.default_playlist, cfg)
-        if channels is None:
+        if cfg.default_playlist:
+            channels = _load_and_pick(cfg.default_playlist, cfg)
+            if channels is None:
+                channels = []
+        else:
             channels = []
 
     # ── Initialize VLC ────────────────────────────────────────────────────────
