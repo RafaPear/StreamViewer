@@ -4,7 +4,27 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent.parent   # project root (one level above src/)
+def _app_dir() -> Path:
+    """Return the application root directory.
+
+    When running as a frozen PyInstaller bundle, use a stable directory next to
+    the .app / .exe rather than the ephemeral _MEIPASS temp dir.  In dev mode,
+    use the project root (one level above src/).
+    """
+    import sys
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        if sys.platform == "darwin":
+            # .app/Contents/MacOS/StreamsClient → .app's parent directory
+            p = exe
+            while p.suffix != ".app" and p != p.parent:
+                p = p.parent
+            return p.parent
+        # Windows: directory containing the exe
+        return exe.parent
+    return Path(__file__).resolve().parent.parent
+
+APP_DIR = _app_dir()
 CONFIG_DIR = APP_DIR
 CONFIG_FILE = APP_DIR / "config.json"
 

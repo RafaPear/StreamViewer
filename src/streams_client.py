@@ -109,7 +109,9 @@ def main() -> None:
                         help="List saved favourite channels and exit")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Show all log output in the terminal")
-    args = parser.parse_args()
+    # parse_known_args: macOS Finder may inject extra arguments (e.g.
+    # -NSDocumentRevisionsDebugMode, -psn_*) that would cause parse_args to exit.
+    args, _unknown = parser.parse_known_args()
 
     cfg = load_config()
 
@@ -290,4 +292,15 @@ def _load_and_pick(source: str, cfg) -> list[Channel] | None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Write crash log next to the app so the user can report it.
+        import traceback
+        from config import APP_DIR
+        try:
+            crash_file = APP_DIR / "crash.log"
+            crash_file.write_text(traceback.format_exc(), encoding="utf-8")
+        except Exception:
+            pass
+        raise
