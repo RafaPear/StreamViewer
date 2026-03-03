@@ -19,6 +19,7 @@ import logging
 
 import vlc
 
+from PyQt6.QtCore import QTimer
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,11 @@ _UA = (
 )
 
 # Seconds to wait in Opening/Buffering before declaring a connection timeout.
-_CONNECT_TIMEOUT = 30.0
+_CONNECT_TIMEOUT = 45.0
 # Seconds of buffering mid-stream before we consider the connection lost.
-_BUFFER_TOLERANCE = 15.0
+_BUFFER_TOLERANCE = 30.0
 # Seconds of "Playing" with no time progress before declaring a stall.
-_STALL_TIMEOUT = 10.0
+_STALL_TIMEOUT = 20.0
 # Poll interval in seconds.
 _POLL_INTERVAL = 0.2
 
@@ -118,8 +119,6 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 retry_delay = min(retry_delay * 2, cfg.max_retry_delay)
                 continue
 
-            _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
-
             logger.info("[%s] starting VLC playback (attempt %d)", name, attempt)
 
             started = False
@@ -158,6 +157,12 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     if not started:
                         started = True
                         _safe(widget.hide_status)
+                        # Reapply audio state now that VLC audio subsystem is live,
+                        # and schedule a delayed reapply to catch late initialisation.
+                        _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
+                        QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
+                        # Preload quality variants in background.
+                        _safe(widget.prefetch_variants)
                         retry_delay = cfg.retry_delay
                         attempt = 0  # reset on successful playback
                         logger.info("[%s] playback started", name)
@@ -197,11 +202,11 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         _safe(widget.show_status, "Buffering...", "info")
 
                 elif state in (vlc.State.Ended, vlc.State.Error):
-                    if started or grace_ticks > 25:  # 5 s grace for startup
+                    if started or grace_ticks > 50:  # 10 s grace for startup
                         terminal_ticks += 1
-                        # Require 3 s of consecutive terminal state before acting.
+                        # Require 5 s of consecutive terminal state before acting.
                         # VLC can briefly flash Ended between HLS segments.
-                        if terminal_ticks * _POLL_INTERVAL >= 3.0:
+                        if terminal_ticks * _POLL_INTERVAL >= 5.0:
                             kind = "ended" if state == vlc.State.Ended else "error"
                             logger.warning("[%s] stream %s (confirmed after %.1fs)",
                                            name, kind, terminal_ticks * _POLL_INTERVAL)

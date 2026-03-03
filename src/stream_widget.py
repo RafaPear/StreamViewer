@@ -84,6 +84,7 @@ class StreamWidget(QWidget):
         # Quality selection
         self._variants: list = []
         self._variants_fetched = False
+        self._variants_loading = False
         self._quality_url: str | None = None
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -208,9 +209,11 @@ class StreamWidget(QWidget):
         if self._released:
             return
         try:
-            muted = self._player.audio_get_mute()
-            self._player.audio_set_mute(not muted)
-            self._btn_mute.setText("🔇" if not muted else "🔊")
+            # Use button text as source of truth — VLC's audio_get_mute()
+            # returns stale values right after playback starts.
+            currently_muted = self._btn_mute.text() == "🔇"
+            self._player.audio_set_mute(not currently_muted)
+            self._btn_mute.setText("🔊" if currently_muted else "🔇")
         except Exception:
             pass
 
@@ -307,6 +310,16 @@ class StreamWidget(QWidget):
             pass
         self._btn_mute.setText("🔊" if active else "🔇")
 
+    def reapply_audio(self) -> None:
+        """Re-apply current mute state to VLC after audio subsystem inits."""
+        if self._released:
+            return
+        muted = self._btn_mute.text() == "🔇"
+        try:
+            self._player.audio_set_mute(muted)
+        except Exception:
+            pass
+
     # ── Status display ───────────────────────────────────────────────────────
 
     _STATUS_STYLE = "color: #ccc; background: rgba(0,0,0,180);"
@@ -372,15 +385,14 @@ class StreamWidget(QWidget):
 
     # ── Quality selection ────────────────────────────────────────────────────
 
-    def _on_quality_click(self) -> None:
-        if not self._variants_fetched:
-            self._btn_quality.setEnabled(False)
-            self._btn_quality.setToolTip("Loading quality options…")
-            asyncio.ensure_future(self._fetch_variants_async())
+    def prefetch_variants(self) -> None:
+        """Start fetching quality variants in background (called on playback start)."""
+        if self._variants_fetched or self._variants_loading:
             return
-        self._show_quality_menu()
+        self._variants_loading = True
+        asyncio.ensure_future(self._prefetch_variants_bg())
 
-    async def _fetch_variants_async(self) -> None:
+    async def _prefetch_variants_bg(self) -> None:
         from models import parse_master_playlist
         try:
             self._variants = await asyncio.to_thread(
@@ -389,9 +401,17 @@ class StreamWidget(QWidget):
         except Exception:
             self._variants = []
         self._variants_fetched = True
+        self._variants_loading = False
         self._btn_quality.setEnabled(True)
         self._btn_quality.setToolTip("Video quality")
-        QTimer.singleShot(0, self._show_quality_menu)
+
+    def _on_quality_click(self) -> None:
+        if not self._variants_fetched:
+            self._btn_quality.setEnabled(False)
+            self._btn_quality.setToolTip("Loading quality options…")
+            asyncio.ensure_future(self._prefetch_variants_bg())
+            return
+        self._show_quality_menu()
 
     def _show_quality_menu(self) -> None:
         menu = QMenu(self)

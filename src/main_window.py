@@ -292,25 +292,38 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.MouseMove and not self._grid_mode:
             # Skip overlay toggling while a popup menu is active to avoid
             # showing/hiding the controls bar mid-QMenu.exec() (crash).
-            if QApplication.activePopupWidget() is None:
-                self._show_overlay()
+            if QApplication.activePopupWidget() is not None:
+                return False
+            # Always restore cursor immediately on any mouse movement.
+            self._show_overlay()
+            # Only auto-hide when mouse is over the active stream widget.
+            if self._is_mouse_over_video(event):
                 self._cursor_timer.start()
+            else:
+                self._cursor_timer.stop()
         return False
 
+    def _is_mouse_over_video(self, event) -> bool:
+        """Return True when the mouse is inside the active stream widget."""
+        if not (0 <= self._active_index < len(self._widgets)):
+            return False
+        w = self._widgets[self._active_index]
+        try:
+            pos = event.globalPosition().toPoint()
+        except AttributeError:
+            pos = event.globalPos()
+        return w.rect().contains(w.mapFromGlobal(pos))
+
     def _hide_overlay(self) -> None:
-        """Hide cursor on the video widget and control bar after idle in single-stream view."""
+        """Hide cursor and control bar after idle timeout over the video."""
         if self._grid_mode:
             return
-        # Don't hide while a popup menu (e.g. quality menu) is open.
         if QApplication.activePopupWidget() is not None:
-            self._cursor_timer.start()  # retry after another interval
+            self._cursor_timer.start()
             return
         if not self._cursor_hidden:
             self._cursor_hidden = True
-            if 0 <= self._active_index < len(self._widgets):
-                w = self._widgets[self._active_index]
-                w.setCursor(Qt.CursorShape.BlankCursor)
-                w._video_frame.setCursor(Qt.CursorShape.BlankCursor)
+            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
         if 0 <= self._active_index < len(self._widgets):
             self._widgets[self._active_index]._controls.hide()
 
@@ -318,9 +331,7 @@ class MainWindow(QMainWindow):
         """Restore cursor and control bar on mouse activity."""
         if self._cursor_hidden:
             self._cursor_hidden = False
-            for w in self._widgets:
-                w.setCursor(Qt.CursorShape.PointingHandCursor)
-                w._video_frame.setCursor(Qt.CursorShape.ArrowCursor)
+            QApplication.restoreOverrideCursor()
         if not self._grid_mode and 0 <= self._active_index < len(self._widgets):
             self._widgets[self._active_index]._controls.show()
 
