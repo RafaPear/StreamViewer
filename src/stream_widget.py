@@ -38,6 +38,41 @@ _SLIDER_SS = (
 )
 
 
+class _InputOverlay(QWidget):
+    """Transparent widget that sits on top of VLC's native video surface.
+
+    VLC's NSView/HWND steals mouse and keyboard events from Qt.  This
+    overlay intercepts them and re-emits Qt signals so that click,
+    double-click, and context-menu all work reliably.
+    """
+
+    clicked = pyqtSignal()
+    double_clicked = pyqtSignal()
+    context_menu_at = pyqtSignal(QPoint)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setMouseTracking(True)
+        self.raise_()
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit()
+        ev.accept()
+
+    def contextMenuEvent(self, ev) -> None:  # noqa: N802
+        pos = ev.globalPosition().toPoint() if hasattr(ev, 'globalPosition') else ev.globalPos()
+        self.context_menu_at.emit(pos)
+        ev.accept()
+
+
 class StreamWidget(QWidget):
     """
     Embeds a VLC media player for a single video stream.
@@ -119,6 +154,13 @@ class StreamWidget(QWidget):
         self._video_frame = QFrame()
         self._video_frame.setStyleSheet("background: black;")
         self._border_layout.addWidget(self._video_frame)
+
+        # Transparent overlay to intercept mouse events above VLC's native view.
+        self._input_overlay = _InputOverlay(self._video_frame)
+        self._input_overlay.clicked.connect(lambda: self.clicked.emit(self.index))
+        self._input_overlay.double_clicked.connect(lambda: self.double_clicked.emit(self.index))
+        self._input_overlay.context_menu_at.connect(
+            lambda pos: self.context_menu_requested.emit(self.index, pos))
 
         root.addWidget(self._border_frame, stretch=1)
 
@@ -258,6 +300,9 @@ class StreamWidget(QWidget):
                 self._player.set_hwnd(handle)
         except Exception:
             pass
+        # Re-raise overlay above VLC's newly-created native view.
+        self._input_overlay.raise_()
+        self._input_overlay.setGeometry(self._video_frame.rect())
 
     def play_url(self, url: str, options: list[str] | None = None) -> None:
         if self._released:
@@ -607,3 +652,5 @@ class StreamWidget(QWidget):
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
         self._center_status()
+        # Keep overlay covering the entire video surface.
+        self._input_overlay.setGeometry(self._video_frame.rect())

@@ -927,6 +927,7 @@ class MainWindow(QMainWindow):
         return w
 
     def _on_stream_clicked(self, index: int) -> None:
+        self.activateWindow()  # ensure main window has keyboard focus
         if 0 <= index < len(self._widgets) and self._widgets[index]._is_detached:
             return
         if self._grid_mode:

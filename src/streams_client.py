@@ -205,6 +205,8 @@ def main() -> None:
     vlc_args = [
         "--quiet",
         "--no-video-title-show",
+        "--no-mouse-events",
+        "--no-keyboard-events",
     ]
     if sys.platform == "darwin":
         vlc_args.append("--avcodec-hw=videotoolbox")
