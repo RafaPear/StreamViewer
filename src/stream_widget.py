@@ -1,6 +1,7 @@
 """stream_widget.py – StreamWidget: VLC-based video player widget."""
 
 import asyncio
+import logging
 import sys
 import time
 
@@ -20,6 +21,8 @@ from PyQt6.QtWidgets import (
 
 from config import Config
 from models import Channel
+
+logger = logging.getLogger("stream_widget")
 
 _BTN_SS = (
     "QPushButton { color: white; background: transparent; border: none;"
@@ -343,10 +346,19 @@ class StreamWidget(QWidget):
             self._player.audio_set_volume(100 if active else 0)
             if active:
                 tracks = self._player.audio_get_track_description() or []
-                for tid, _ in tracks:
+                has_audio = False
+                for tid, desc in tracks:
                     if tid >= 0:
                         self._player.audio_set_track(tid)
+                        has_audio = True
                         break
+                name = self.channel.name if self.channel else "?"
+                if not has_audio:
+                    logger.info("[%s] no audio track available", name)
+                    self.show_status("No audio track", "warning")
+                else:
+                    desc_str = desc.decode() if isinstance(desc, bytes) else str(desc)
+                    logger.debug("[%s] audio track %d: %s", name, tid, desc_str)
         except Exception:
             pass
 
