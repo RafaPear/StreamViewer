@@ -42,7 +42,7 @@ class Config:
     upscale_preset: str = "off"
 
     # ── Playlist / session ────────────────────────────────────────────────────
-    default_playlist: str = "https://m3upt.com/iptv"
+    default_playlist: str = ""
     remember_session: bool = True
 
     # ── Favourites ────────────────────────────────────────────────────────────

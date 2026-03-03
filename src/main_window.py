@@ -270,7 +270,8 @@ class MainWindow(QMainWindow):
 
         v.addSpacing(20)
         hint = QLabel(
-            "Tip: Press  A  to add a source  ·  Ctrl+Q  to quit"
+            "Tip: Press  A  to add a source  ·  ←/→  switch streams  ·  "
+            "Backspace  remove  ·  G  toggle grid  ·  Ctrl+Q  quit"
         )
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet("color: #666; font-size: 11px;")
@@ -625,10 +626,15 @@ class MainWindow(QMainWindow):
             if not self._grid_mode:
                 self._show_single(new_idx)
         else:
-            # No streams left — restore cursor/overlay and show empty state.
+            # No streams left — switch to grid page to show empty state.
+            self._grid_mode = True
+            self._act_grid.setChecked(True)
+            self._tb_grid.setChecked(True)
             self._cursor_timer.stop()
             self._show_overlay()
             self.statusBar().show()
+            self._rebuild_grid()
+            self._stack.setCurrentIndex(1)
         self._apply_single_view_connection_policy()
         self.setFocus()  # re-grab keyboard focus after grid rebuild
 
