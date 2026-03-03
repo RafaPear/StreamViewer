@@ -336,8 +336,13 @@ class StreamWidget(QWidget):
             pass
         self._btn_mute.setText("🔊" if active else "🔇")
 
-    def reapply_audio(self) -> None:
-        """Re-apply current mute state to VLC after audio subsystem inits."""
+    def reapply_audio(self, final: bool = False) -> None:
+        """Re-apply current mute state to VLC after audio subsystem inits.
+
+        Args:
+            final: If True, this is the last retry — show a warning if
+                   there is still no audio track.
+        """
         if self._released:
             return
         active = self._btn_mute.text() == "🔊"
@@ -353,12 +358,12 @@ class StreamWidget(QWidget):
                         has_audio = True
                         break
                 name = self.channel.name if self.channel else "?"
-                if not has_audio:
-                    logger.info("[%s] no audio track available", name)
-                    self.show_status("No audio track", "warning")
-                else:
+                if has_audio:
                     desc_str = desc.decode() if isinstance(desc, bytes) else str(desc)
                     logger.debug("[%s] audio track %d: %s", name, tid, desc_str)
+                elif final:
+                    logger.warning("[%s] no audio track found after retries", name)
+                    self.show_status("No audio track available", "warning")
         except Exception:
             pass
 
@@ -526,10 +531,10 @@ class StreamWidget(QWidget):
         self._update_border()
         if self._cfg.audio_enabled:
             self.set_audio_active(active)
-            # VLC may not honor mute changes immediately; reapply after delay.
             if active:
-                QTimer.singleShot(300, self.reapply_audio)
-                QTimer.singleShot(1000, self.reapply_audio)
+                for delay in (300, 1000, 3000, 5000):
+                    final = (delay == 5000)
+                    QTimer.singleShot(delay, lambda f=final: self.reapply_audio(f))
 
     def request_restart(self, force: bool = False) -> None:
         if not force:
