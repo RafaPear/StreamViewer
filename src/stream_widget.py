@@ -70,7 +70,7 @@ class StreamWidget(QWidget):
         self._restart_requested = False
         self._released = False
         self._is_detached = False
-        self._upscale_active = False
+        self._upscale_preset: str = "off"
 
         # VLC
         self._vlc_instance = vlc_instance
@@ -330,11 +330,24 @@ class StreamWidget(QWidget):
 
     # ── Runtime upscale / enhance ────────────────────────────────────────────
 
-    def set_upscale(self, enabled: bool) -> None:
-        """Enable or disable SW-decode upscaling (triggers a stream restart)."""
-        if self._upscale_active == enabled:
+    _UPSCALE_LABELS = {
+        "off": None,
+        "lanczos": "Lanczos",
+        "sharpen_light": "Sharpen (Light)",
+        "sharpen_medium": "Sharpen (Medium)",
+        "sharpen_strong": "Sharpen (Strong)",
+    }
+
+    def set_upscale(self, preset: str) -> None:
+        """Switch upscale preset (triggers a stream restart with status)."""
+        if self._upscale_preset == preset:
             return
-        self._upscale_active = enabled
+        self._upscale_preset = preset
+        label = self._UPSCALE_LABELS.get(preset)
+        if label:
+            self.show_status(f"Enabling upscaler ({label})…", "info")
+        else:
+            self.show_status("Disabling upscaler…", "info")
         self._restart_requested = True
 
     # ── Status display ───────────────────────────────────────────────────────

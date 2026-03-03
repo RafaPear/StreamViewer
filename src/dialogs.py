@@ -434,16 +434,28 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel(""))   # spacer
 
         # ── Upscaling ────────────────────────────────────────────────────────
-        grp_upscale = QGroupBox("Upscaling")
+        grp_upscale = QGroupBox("Upscaling (fullscreen only)")
         uf = QFormLayout(grp_upscale)
 
-        self._upscale_enabled = QCheckBox("Enable high-quality upscaling (Lanczos)")
-        self._upscale_enabled.setChecked(self._cfg.upscale_enabled)
-        uf.addRow(self._upscale_enabled)
+        from PyQt6.QtWidgets import QComboBox
+        self._upscale_combo = QComboBox()
+        self._upscale_presets = [
+            ("off", "Off"),
+            ("lanczos", "Lanczos scaling"),
+            ("sharpen_light", "Lanczos + Sharpen (Light)"),
+            ("sharpen_medium", "Lanczos + Sharpen (Medium)"),
+            ("sharpen_strong", "Lanczos + Sharpen (Strong)"),
+        ]
+        for key, label in self._upscale_presets:
+            self._upscale_combo.addItem(label, key)
+        current = self._cfg.upscale_preset
+        idx = next((i for i, (k, _) in enumerate(self._upscale_presets) if k == current), 0)
+        self._upscale_combo.setCurrentIndex(idx)
+        uf.addRow("Preset:", self._upscale_combo)
 
         upscale_note = QLabel(
-            "Uses Lanczos algorithm for sharper scaling of low-res streams.\n"
-            "May use slightly more CPU."
+            "Upscaling uses software decoding for the fullscreen stream.\n"
+            "Higher presets sharpen the image but use more CPU."
         )
         upscale_note.setWordWrap(True)
         upscale_note.setStyleSheet("color: gray; font-size: 11px;")
@@ -469,7 +481,7 @@ class SettingsDialog(QDialog):
         self._cfg.vlc_network_cache = self._net_cache.value()
         self._cfg.vlc_live_cache = self._live_cache.value()
         self._cfg.cenc_decryption_key = self._cenc_key.text().strip()
-        self._cfg.upscale_enabled = self._upscale_enabled.isChecked()
+        self._cfg.upscale_preset = self._upscale_combo.currentData()
         self.accept()
 
 

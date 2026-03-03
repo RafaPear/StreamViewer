@@ -34,7 +34,8 @@ class Config:
     cenc_decryption_key: str = ""
 
     # ── Upscaling ────────────────────────────────────────────────────────────
-    upscale_enabled: bool = False
+    # "off", "lanczos", "sharpen_light", "sharpen_medium", "sharpen_strong"
+    upscale_preset: str = "off"
 
     # ── Playlist / session ────────────────────────────────────────────────────
     default_playlist: str = "https://m3upt.com/iptv"

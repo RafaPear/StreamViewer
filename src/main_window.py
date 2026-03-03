@@ -766,7 +766,7 @@ class MainWindow(QMainWindow):
             "vlc_network_cache": self._cfg.vlc_network_cache,
             "vlc_live_cache": self._cfg.vlc_live_cache,
             "cenc_decryption_key": self._cfg.cenc_decryption_key,
-            "upscale_enabled": self._cfg.upscale_enabled,
+            "upscale_preset": self._cfg.upscale_preset,
             "audio_enabled": self._cfg.audio_enabled,
         }
         dlg = SettingsDialog(self._cfg, self)
@@ -777,7 +777,7 @@ class MainWindow(QMainWindow):
             old["vlc_network_cache"] != self._cfg.vlc_network_cache
             or old["vlc_live_cache"] != self._cfg.vlc_live_cache
             or old["cenc_decryption_key"] != self._cfg.cenc_decryption_key
-            or old["upscale_enabled"] != self._cfg.upscale_enabled
+            or old["upscale_preset"] != self._cfg.upscale_preset
         )
 
         for w in self._widgets:
@@ -960,7 +960,7 @@ class MainWindow(QMainWindow):
             self._show_overlay()
             # Disable upscale enhance when leaving fullscreen.
             if 0 <= self._active_index < len(self._widgets):
-                self._widgets[self._active_index].set_upscale(False)
+                self._widgets[self._active_index].set_upscale("off")
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
@@ -1108,8 +1108,8 @@ class MainWindow(QMainWindow):
         target.embed_player()
         target.set_border_visible(False)  # no border in single-stream view
         target.set_controls_visible(False)  # hide controls; shown on hover
-        if self._cfg.upscale_enabled:
-            target.set_upscale(True)
+        if self._cfg.upscale_preset != "off":
+            target.set_upscale(self._cfg.upscale_preset)
         self.statusBar().hide()
         self._cursor_timer.start()  # start hide-cursor countdown
         self._stack.setCurrentIndex(0)
@@ -1123,7 +1123,7 @@ class MainWindow(QMainWindow):
             self._show_overlay()
             # Disable upscale enhance when leaving fullscreen.
             if 0 <= self._active_index < len(self._widgets):
-                self._widgets[self._active_index].set_upscale(False)
+                self._widgets[self._active_index].set_upscale("off")
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)

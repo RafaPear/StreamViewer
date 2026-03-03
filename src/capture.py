@@ -33,9 +33,9 @@ _UA = (
 # Seconds to wait in Opening/Buffering before declaring a connection timeout.
 _CONNECT_TIMEOUT = 45.0
 # Seconds of buffering mid-stream before we consider the connection lost.
-_BUFFER_TOLERANCE = 30.0
+_BUFFER_TOLERANCE = 60.0
 # Seconds of "Playing" with no time progress before declaring a stall.
-_STALL_TIMEOUT = 20.0
+_STALL_TIMEOUT = 30.0
 # Poll interval in seconds.
 _POLL_INTERVAL = 0.2
 # How long to wait after an embed (reparent) before monitoring state.
@@ -44,6 +44,10 @@ _EMBED_GRACE = 3.0
 _QUICK_RESTART_MAX = 3
 # Quick-restart: seconds to wait for Playing state after play().
 _QUICK_RESTART_WAIT = 3.0
+# Buffering shorter than this (seconds) is absorbed silently.
+_BUFFER_SILENT = 1.5
+# Buffering longer than this shows elapsed seconds.
+_BUFFER_WARN = 5.0
 
 
 def _media_options(cfg: Config) -> list[str]:
@@ -51,22 +55,47 @@ def _media_options(cfg: Config) -> list[str]:
     opts = [
         f":network-caching={cfg.vlc_network_cache}",
         f":live-caching={cfg.vlc_live_cache}",
+        f":file-caching={cfg.vlc_network_cache}",
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
+        ":clock-jitter=5000",       # tolerate 5s clock drift before resync
+        ":http-reconnect",          # auto-reconnect dropped HTTP connections
+        ":http-continuous",         # keep-alive / persistent HTTP connections
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
     return opts
 
 
-def _upscale_options() -> list[str]:
-    """Extra per-media VLC options for SW-decode upscaling (fullscreen only)."""
-    return [
-        ":avcodec-hw=none",             # force software decoding so filters work
-        ":swscale-mode=9",              # Lanczos interpolation
-        ":video-filter=sharpen",        # sharpening filter
-        ":sharpen-sigma=0.06",          # noticeable but not harsh
-    ]
+def _upscale_options(preset: str) -> list[str]:
+    """Per-media VLC options for the given upscale preset (fullscreen only)."""
+    if preset == "lanczos":
+        return [
+            ":avcodec-hw=none",
+            ":swscale-mode=9",              # Lanczos interpolation
+        ]
+    if preset == "sharpen_light":
+        return [
+            ":avcodec-hw=none",
+            ":swscale-mode=9",
+            ":video-filter=sharpen",
+            ":sharpen-sigma=0.03",
+        ]
+    if preset == "sharpen_medium":
+        return [
+            ":avcodec-hw=none",
+            ":swscale-mode=9",
+            ":video-filter=sharpen",
+            ":sharpen-sigma=0.06",
+        ]
+    if preset == "sharpen_strong":
+        return [
+            ":avcodec-hw=none",
+            ":swscale-mode=9",
+            ":video-filter=sharpen",
+            ":sharpen-sigma=0.12",
+        ]
+    return []
 
 
 def _safe(fn, *args, default=None):
@@ -114,8 +143,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             await asyncio.sleep(0.5 + jitter)
 
             options = _media_options(cfg)
-            if getattr(widget, '_upscale_active', False):
-                options.extend(_upscale_options())
+            upscale_preset = getattr(widget, '_upscale_preset', 'off')
+            if upscale_preset != 'off':
+                options.extend(_upscale_options(upscale_preset))
             url = widget._quality_url or widget.channel.url
             if widget._quality_url:
                 options = [o for o in options if not o.startswith(":adaptive-")]
@@ -197,11 +227,12 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                                            name, _BUFFER_TOLERANCE)
                             _safe(widget.show_status, "Connection lost", "error")
                             break
-                        elif buffer_ticks > 2:
+                        elif secs >= _BUFFER_WARN:
                             _safe(widget.show_status,
                                   f"Buffering… {secs:.0f}s", "warn")
-                        else:
+                        elif secs >= _BUFFER_SILENT:
                             _safe(widget.show_status, "Buffering…", "info")
+                        # else: brief hiccup — absorbed silently
                     else:
                         _safe(widget.show_status, "Buffering…", "info")
 
@@ -210,7 +241,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     # playlist refreshes.  Try a quick stop→play before
                     # doing a full reconnect.
                     terminal_ticks += 1
-                    if terminal_ticks * _POLL_INTERVAL >= 2.0:
+                    if terminal_ticks * _POLL_INTERVAL >= 1.0:
                         logger.info("[%s] stream ended — attempting quick restart", name)
                         recovered = await _quick_restart(widget, name)
                         if recovered:
