@@ -381,13 +381,8 @@ class StreamWidget(QWidget):
             pass
         self._btn_mute.setText("🔊" if active else "🔇")
 
-    def reapply_audio(self, final: bool = False) -> None:
-        """Re-apply current mute state to VLC after audio subsystem inits.
-
-        Args:
-            final: If True, this is the last retry — show a warning if
-                   there is still no audio track.
-        """
+    def reapply_audio(self, _final: bool = False) -> None:
+        """Re-apply current mute state to VLC after audio subsystem inits."""
         if self._released:
             return
         active = self._btn_mute.text() == "🔊"
@@ -396,19 +391,14 @@ class StreamWidget(QWidget):
             self._player.audio_set_volume(100 if active else 0)
             if active:
                 tracks = self._player.audio_get_track_description() or []
-                has_audio = False
                 for tid, desc in tracks:
                     if tid >= 0:
                         self._player.audio_set_track(tid)
-                        has_audio = True
+                        desc_str = desc.decode() if isinstance(desc, bytes) else str(desc)
+                        logger.debug("[%s] audio track %d: %s",
+                                     self.channel.name if self.channel else "?",
+                                     tid, desc_str)
                         break
-                name = self.channel.name if self.channel else "?"
-                if has_audio:
-                    desc_str = desc.decode() if isinstance(desc, bytes) else str(desc)
-                    logger.debug("[%s] audio track %d: %s", name, tid, desc_str)
-                elif final:
-                    logger.warning("[%s] no audio track found after retries", name)
-                    self.show_status("No audio track available", "warning")
         except Exception:
             pass
 

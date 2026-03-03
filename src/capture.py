@@ -183,8 +183,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                         # VLC needs time to parse TS audio PIDs; retry at increasing intervals.
                         for delay in (500, 1500, 3000, 5000):
-                            final = (delay == 5000)
-                            QTimer.singleShot(delay, lambda w=widget, f=final: _safe(w.reapply_audio, f))
+                            QTimer.singleShot(delay, lambda w=widget: _safe(w.reapply_audio))
                         _safe(widget.prefetch_variants)
                         retry_delay = cfg.retry_delay
                         attempt = 0
