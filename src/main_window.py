@@ -5,7 +5,7 @@ import math
 
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
-from PyQt6.QtGui import QAction, QCursor, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -220,7 +220,6 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
 
         self._build_menu()
-        self._setup_shortcuts()
 
     # ── Empty-state welcome ───────────────────────────────────────────────────
 
@@ -440,6 +439,12 @@ class MainWindow(QMainWindow):
         act_remove.setShortcut("Del")
         act_remove.triggered.connect(self.remove_active)
         streams.addAction(act_remove)
+
+        # Backspace as alternate shortcut for remove.
+        act_remove_bs = QAction(self)
+        act_remove_bs.setShortcut("Backspace")
+        act_remove_bs.triggered.connect(self.remove_active)
+        self.addAction(act_remove_bs)
 
         act_detach = QAction("&Detach Active Stream", self)
         act_detach.triggered.connect(lambda: self._detach_stream(self._active_index))
@@ -669,32 +674,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         widget.deleteLater()
-
-    # ── Keyboard ──────────────────────────────────────────────────────────────
-
-    def _setup_shortcuts(self) -> None:
-        """Register global keyboard shortcuts (work even when VLC has focus)."""
-        def sc(key, slot):
-            s = QShortcut(QKeySequence(key), self)
-            s.setContext(Qt.ShortcutContext.WindowShortcut)
-            s.activated.connect(slot)
-            return s
-
-        sc(Qt.Key.Key_Delete, self.remove_active)
-        sc(Qt.Key.Key_Backspace, self.remove_active)
-        sc(Qt.Key.Key_Right, lambda: self._widgets and self._switch_stream(
-            (self._active_index + 1) % len(self._widgets)))
-        sc(Qt.Key.Key_Left, lambda: self._widgets and self._switch_stream(
-            (self._active_index - 1) % len(self._widgets)))
-        sc(Qt.Key.Key_G, self._toggle_grid)
-        sc(Qt.Key.Key_A, self._action_add_source)
-        sc(Qt.Key.Key_L, self._action_add_source)
-        sc(Qt.Key.Key_PageUp, self._page_prev)
-        sc(Qt.Key.Key_PageDown, self._page_next)
-        sc(QKeySequence(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Up),
-           lambda: self._move_stream(-1))
-        sc(QKeySequence(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Down),
-           lambda: self._move_stream(1))
 
     # ── Close / save session ──────────────────────────────────────────────────
 
