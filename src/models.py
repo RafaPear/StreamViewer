@@ -81,15 +81,23 @@ def parse_master_playlist(master_url: str) -> list[StreamVariant]:
     """Fetch an HLS master playlist and return available quality variants."""
     if not master_url.startswith(("http://", "https://")):
         return []
+    # Quick HEAD check — skip raw TS / binary streams that will never be HLS.
+    try:
+        head = urllib.request.Request(
+            master_url, method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; StreamsClient/1.0)"},
+        )
+        with urllib.request.urlopen(head, timeout=3) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+            if "video/" in ctype or "octet-stream" in ctype:
+                return []
+    except Exception:
+        return []
     req = urllib.request.Request(
         master_url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; StreamsClient/1.0)"},
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        ctype = resp.headers.get("Content-Type", "")
-        # Plain TS streams will never contain an HLS master playlist.
-        if "video/" in ctype or "application/octet-stream" in ctype:
-            return []
         text = resp.read(64 * 1024).decode("utf-8", errors="replace")
     if "#EXT-X-STREAM-INF" not in text:
         return []
