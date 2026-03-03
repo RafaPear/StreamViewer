@@ -4,7 +4,7 @@ import asyncio
 import math
 
 import vlc
-from PyQt6.QtCore import Qt, QTimer, QEvent
+from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -23,17 +24,45 @@ from PyQt6.QtWidgets import (
 from capture import capture_loop
 from config import Config, save_config
 from dialogs import (
+    AddSourceDialog,
     AddStreamDialog,
     ChannelPickerDialog,
     FavouritesDialog,
-    LoadGridPresetDialog,
-    LoadPlaylistDialog,
-    PlaylistManagerDialog,
-    SaveGridPresetDialog,
+    GridPresetsDialog,
     SettingsDialog,
 )
 from models import Channel, parse_m3u
 from stream_widget import StreamWidget
+
+
+class _DetachedStreamWindow(QWidget):
+    """Floating window for a detached stream."""
+
+    reattach_requested = pyqtSignal(int)
+
+    def __init__(self, stream_widget: StreamWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self._widget = stream_widget
+        self.setWindowTitle(stream_widget.channel.display_name())
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        stream_widget._is_detached = True
+        stream_widget.set_border_visible(False)
+        stream_widget.set_controls_visible(True)
+        layout.addWidget(stream_widget)
+        stream_widget.show()
+        stream_widget._embedded_handle = 0
+        QTimer.singleShot(50, stream_widget.embed_player)
+        self.resize(640, 480)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.reattach_requested.emit(self._widget.index)
+        event.accept()
+
+    @property
+    def stream_widget(self) -> StreamWidget:
+        return self._widget
 
 
 class MainWindow(QMainWindow):
@@ -61,6 +90,7 @@ class MainWindow(QMainWindow):
         self._active_index = 0
         self._grid_mode = cfg.last_grid_mode
         self._current_page = 0
+        self._detached_windows: dict[int, _DetachedStreamWindow] = {}
 
         self.setWindowTitle("StreamsClient")
 
@@ -100,15 +130,10 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background: #3a3a3a; border-color: #0a84ff; color: white; }"
         )
 
-        self._tb_add = QPushButton("Add Stream")
+        self._tb_add = QPushButton("Add Source")
         self._tb_add.setStyleSheet(_tb_btn)
-        self._tb_add.clicked.connect(self._action_add_stream)
+        self._tb_add.clicked.connect(self._action_add_source)
         pb.addWidget(self._tb_add)
-
-        self._tb_playlist = QPushButton("Load Playlist")
-        self._tb_playlist.setStyleSheet(_tb_btn)
-        self._tb_playlist.clicked.connect(self._action_load_playlist)
-        pb.addWidget(self._tb_playlist)
 
         self._tb_favs = QPushButton("Favourites")
         self._tb_favs.setStyleSheet(_tb_btn)
@@ -117,7 +142,7 @@ class MainWindow(QMainWindow):
 
         self._tb_preset = QPushButton("Presets")
         self._tb_preset.setStyleSheet(_tb_btn)
-        self._tb_preset.clicked.connect(self._action_load_grid_preset)
+        self._tb_preset.clicked.connect(self._action_grid_presets)
         pb.addWidget(self._tb_preset)
 
         pb.addStretch()
@@ -224,15 +249,10 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addStretch()
 
-        btn_add = QPushButton("Add Stream")
+        btn_add = QPushButton("Add Source")
         btn_add.setStyleSheet(btn_style)
-        btn_add.clicked.connect(self._action_add_stream)
+        btn_add.clicked.connect(self._action_add_source)
         row.addWidget(btn_add)
-
-        btn_playlist = QPushButton("Load Playlist")
-        btn_playlist.setStyleSheet(btn_style)
-        btn_playlist.clicked.connect(self._action_load_playlist)
-        row.addWidget(btn_playlist)
 
         btn_favs = QPushButton("Favourites")
         btn_favs.setStyleSheet(btn_style)
@@ -242,7 +262,7 @@ class MainWindow(QMainWindow):
         if self._cfg.grid_presets:
             btn_preset = QPushButton("Load Preset")
             btn_preset.setStyleSheet(btn_style)
-            btn_preset.clicked.connect(self._action_load_grid_preset)
+            btn_preset.clicked.connect(self._action_grid_presets)
             row.addWidget(btn_preset)
 
         row.addStretch()
@@ -250,7 +270,7 @@ class MainWindow(QMainWindow):
 
         v.addSpacing(20)
         hint = QLabel(
-            "Tip: Press  A  to add a stream  ·  L  to load a playlist  ·  Ctrl+Q  to quit"
+            "Tip: Press  A  to add a source  ·  Ctrl+Q  to quit"
         )
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet("color: #666; font-size: 11px;")
@@ -261,7 +281,7 @@ class MainWindow(QMainWindow):
 
     def _update_empty_state(self) -> None:
         """Show welcome screen when no streams, hide otherwise."""
-        has_streams = bool(self._widgets)
+        has_streams = bool(self._visible_widgets)
         self._empty_widget.setVisible(not has_streams)
         self._grid_page.setVisible(has_streams)
         self._page_bar.setVisible(has_streams)
@@ -278,7 +298,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _hide_overlay(self) -> None:
-        """Hide cursor and control bar after idle timeout in single-stream view."""
+        """Hide cursor on the video widget and control bar after idle in single-stream view."""
         if self._grid_mode:
             return
         # Don't hide while a popup menu (e.g. quality menu) is open.
@@ -287,7 +307,10 @@ class MainWindow(QMainWindow):
             return
         if not self._cursor_hidden:
             self._cursor_hidden = True
-            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+            if 0 <= self._active_index < len(self._widgets):
+                w = self._widgets[self._active_index]
+                w.setCursor(Qt.CursorShape.BlankCursor)
+                w._video_frame.setCursor(Qt.CursorShape.BlankCursor)
         if 0 <= self._active_index < len(self._widgets):
             self._widgets[self._active_index]._controls.hide()
 
@@ -295,17 +318,24 @@ class MainWindow(QMainWindow):
         """Restore cursor and control bar on mouse activity."""
         if self._cursor_hidden:
             self._cursor_hidden = False
-            QApplication.restoreOverrideCursor()
+            for w in self._widgets:
+                w.setCursor(Qt.CursorShape.PointingHandCursor)
+                w._video_frame.setCursor(Qt.CursorShape.ArrowCursor)
         if not self._grid_mode and 0 <= self._active_index < len(self._widgets):
             self._widgets[self._active_index]._controls.show()
 
     # ── Pagination helpers ────────────────────────────────────────────────────
 
     @property
+    def _visible_widgets(self) -> list[StreamWidget]:
+        """Widgets not currently detached."""
+        return [w for w in self._widgets if not w._is_detached]
+
+    @property
     def _effective_grid(self) -> tuple[int, int]:
         """Return (rows, cols) respecting dynamic grid mode."""
         if self._cfg.dynamic_grid:
-            n = len(self._widgets)
+            n = len(self._visible_widgets)
             if n <= 0:
                 return 1, 1
             cols = math.ceil(math.sqrt(n))
@@ -320,7 +350,7 @@ class MainWindow(QMainWindow):
 
     @property
     def _page_count(self) -> int:
-        return max(1, math.ceil(len(self._widgets) / self._streams_per_page))
+        return max(1, math.ceil(len(self._visible_widgets) / self._streams_per_page))
 
     def _page_prev(self) -> None:
         if self._current_page > 0:
@@ -340,15 +370,10 @@ class MainWindow(QMainWindow):
         # ── File menu ────────────────────────────────────────────────────────
         file_menu = mb.addMenu("&File")
 
-        act_add = QAction("&Add Stream...", self)
+        act_add = QAction("&Add Source...", self)
         act_add.setShortcut("A")
-        act_add.triggered.connect(self._action_add_stream)
+        act_add.triggered.connect(self._action_add_source)
         file_menu.addAction(act_add)
-
-        act_load = QAction("&Load Playlist...", self)
-        act_load.setShortcut("L")
-        act_load.triggered.connect(self._action_load_playlist)
-        file_menu.addAction(act_load)
 
         file_menu.addSeparator()
 
@@ -357,13 +382,9 @@ class MainWindow(QMainWindow):
         act_fav_add.triggered.connect(self._action_add_favourite)
         file_menu.addAction(act_fav_add)
 
-        act_fav_manage = QAction("Manage &Favourites...", self)
+        act_fav_manage = QAction("&Favourites...", self)
         act_fav_manage.triggered.connect(self._action_manage_favourites)
         file_menu.addAction(act_fav_manage)
-
-        act_pl_manage = QAction("Saved &Playlists...", self)
-        act_pl_manage.triggered.connect(self._action_manage_playlists)
-        file_menu.addAction(act_pl_manage)
 
         file_menu.addSeparator()
 
@@ -386,6 +407,10 @@ class MainWindow(QMainWindow):
         act_remove.setShortcut("Del")
         act_remove.triggered.connect(self.remove_active)
         streams.addAction(act_remove)
+
+        act_detach = QAction("&Detach Active Stream", self)
+        act_detach.triggered.connect(lambda: self._detach_stream(self._active_index))
+        streams.addAction(act_detach)
 
         streams.addSeparator()
 
@@ -439,13 +464,9 @@ class MainWindow(QMainWindow):
 
         view.addSeparator()
 
-        act_save_preset = QAction("Save Grid &Preset...", self)
-        act_save_preset.triggered.connect(self._action_save_grid_preset)
-        view.addAction(act_save_preset)
-
-        act_load_preset = QAction("&Load Grid Preset...", self)
-        act_load_preset.triggered.connect(self._action_load_grid_preset)
-        view.addAction(act_load_preset)
+        act_preset = QAction("Grid &Presets...", self)
+        act_preset.triggered.connect(self._action_grid_presets)
+        view.addAction(act_preset)
 
         view.addSeparator()
 
@@ -508,6 +529,19 @@ class MainWindow(QMainWindow):
         widget = self._widgets.pop(idx)
         task = self._tasks.pop(widget, None)
         del self._channels[idx]
+
+        # Close detached window if this stream was detached.
+        win = self._detached_windows.pop(idx, None)
+        if win is not None:
+            win.reattach_requested.disconnect()
+            win.close()
+        # Re-key detached windows for shifted indices.
+        new_detached: dict[int, _DetachedStreamWindow] = {}
+        for k, v in self._detached_windows.items():
+            new_key = k - 1 if k > idx else k
+            new_detached[new_key] = v
+            v.stream_widget.update_index(new_key)
+        self._detached_windows = new_detached
 
         # Non-blocking: mark released and hide immediately.
         widget._released = True
@@ -601,9 +635,9 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key.Key_G:
             self._toggle_grid()
         elif key == Qt.Key.Key_A:
-            self._action_add_stream()
+            self._action_add_source()
         elif key == Qt.Key.Key_L:
-            self._action_load_playlist()
+            self._action_add_source()
         elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.remove_active()
         elif key == Qt.Key.Key_Q:
@@ -614,6 +648,11 @@ class MainWindow(QMainWindow):
     # ── Close / save session ──────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        # Close all detached windows.
+        for win in list(self._detached_windows.values()):
+            win.close()
+        self._detached_windows.clear()
+
         # Mark all widgets as released so capture_loop coroutines exit their
         # polling loops promptly; then cancel the tasks.  Do NOT call
         # w.release() here – the capture_loop may still be mid-iteration.
@@ -641,17 +680,15 @@ class MainWindow(QMainWindow):
 
     # ── Dialog actions ────────────────────────────────────────────────────────
 
-    def _action_add_stream(self) -> None:
-        dlg = AddStreamDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.add_channel(dlg.result_channel())
-
-    def _action_load_playlist(self) -> None:
-        dlg = LoadPlaylistDialog(self)
+    def _action_add_source(self) -> None:
+        dlg = AddSourceDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if self._loop:
-            asyncio.ensure_future(self._load_playlist_async(dlg.source()))
+        if dlg.active_tab() == 0:
+            self.add_channel(dlg.result_channel())
+        else:
+            if self._loop:
+                asyncio.ensure_future(self._load_playlist_async(dlg.playlist_source()))
 
     async def _load_playlist_async(self, source: str) -> None:
         """Fetch + parse a playlist in a background thread, then show the picker."""
@@ -679,16 +716,43 @@ class MainWindow(QMainWindow):
                 self.add_channels(selected)
 
     def _action_settings(self) -> None:
+        # Snapshot VLC-related values to detect changes.
+        old = {
+            "vlc_network_cache": self._cfg.vlc_network_cache,
+            "vlc_live_cache": self._cfg.vlc_live_cache,
+            "cenc_decryption_key": self._cfg.cenc_decryption_key,
+            "upscale_enabled": self._cfg.upscale_enabled,
+            "audio_enabled": self._cfg.audio_enabled,
+        }
         dlg = SettingsDialog(self._cfg, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        vlc_changed = (
+            old["vlc_network_cache"] != self._cfg.vlc_network_cache
+            or old["vlc_live_cache"] != self._cfg.vlc_live_cache
+            or old["cenc_decryption_key"] != self._cfg.cenc_decryption_key
+            or old["upscale_enabled"] != self._cfg.upscale_enabled
+        )
+
+        for w in self._widgets:
+            w._cfg = self._cfg
+            w._update_border()
+
+        # Update audio state before restarting (so restart picks up correct state).
+        if old["audio_enabled"] != self._cfg.audio_enabled:
             for w in self._widgets:
-                w._cfg = self._cfg
-                w._update_border()
+                w.set_audio_active(w._active and self._cfg.audio_enabled)
+
+        if vlc_changed:
+            for w in self._widgets:
                 w.request_restart()
-            if self._grid_mode:
-                self._rebuild_grid()
-                self._stack.setCurrentIndex(1)
-            save_config(self._cfg)
+
+        if self._grid_mode:
+            self._rebuild_grid()
+            self._stack.setCurrentIndex(1)
+
+        save_config(self._cfg)
 
     # ── Stream reorder ────────────────────────────────────────────────────────
 
@@ -707,6 +771,13 @@ class MainWindow(QMainWindow):
         )
         self._widgets[idx].update_index(idx)
         self._widgets[new_idx].update_index(new_idx)
+        # Re-key detached windows for swapped indices.
+        d = self._detached_windows
+        w_a, w_b = d.pop(idx, None), d.pop(new_idx, None)
+        if w_a is not None:
+            d[new_idx] = w_a
+        if w_b is not None:
+            d[idx] = w_b
         self._active_index = new_idx
         self._rebuild_grid()
         if not self._grid_mode:
@@ -725,50 +796,31 @@ class MainWindow(QMainWindow):
         save_config(self._cfg)
 
     def _action_manage_favourites(self) -> None:
-        dlg = FavouritesDialog(self._cfg.favourites, self)
+        dlg = FavouritesDialog(self._cfg.favourites, self._cfg.saved_playlists, self)
         result = dlg.exec()
         self._cfg.favourites = dlg.all_favourites()
-        save_config(self._cfg)
-        if result == QDialog.DialogCode.Accepted:
-            selected = dlg.checked_channels()
-            if selected:
-                self.add_channels(selected)
-
-    def _action_manage_playlists(self) -> None:
-        dlg = PlaylistManagerDialog(self._cfg.saved_playlists, self)
-        result = dlg.exec()
         self._cfg.saved_playlists = dlg.all_playlists()
         save_config(self._cfg)
         if result == QDialog.DialogCode.Accepted:
-            pl = dlg.selected_playlist()
-            if pl and self._loop:
-                asyncio.ensure_future(self._load_playlist_async(pl["url"]))
+            if dlg.active_tab() == 0:
+                selected = dlg.checked_channels()
+                if selected:
+                    self.add_channels(selected)
+            else:
+                pl = dlg.selected_playlist()
+                if pl and self._loop:
+                    asyncio.ensure_future(self._load_playlist_async(pl["url"]))
 
     # ── Grid presets ─────────────────────────────────────────────────────────
 
-    def _action_save_grid_preset(self) -> None:
-        if not self._channels:
-            QMessageBox.information(self, "No Streams", "Load some streams first.")
-            return
-        dlg = SaveGridPresetDialog(self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        preset: dict = {
-            "name": dlg.preset_name(),
+    def _action_grid_presets(self) -> None:
+        current_channels = [ch.to_dict() for ch in self._channels] if self._channels else None
+        current_grid = {
             "rows": self._cfg.grid_rows,
             "cols": self._cfg.grid_cols,
             "dynamic": self._cfg.dynamic_grid,
-            "channels": [ch.to_dict() for ch in self._channels],
-        }
-        self._cfg.grid_presets.append(preset)
-        save_config(self._cfg)
-        self.statusBar().showMessage(f"Saved preset \"{preset['name']}\"", 3000)
-
-    def _action_load_grid_preset(self) -> None:
-        if not self._cfg.grid_presets:
-            QMessageBox.information(self, "No Presets", "No saved grid presets.")
-            return
-        dlg = LoadGridPresetDialog(self._cfg.grid_presets, self)
+        } if self._channels else None
+        dlg = GridPresetsDialog(self._cfg.grid_presets, current_channels, current_grid, self)
         result = dlg.exec()
         self._cfg.grid_presets = dlg.all_presets()
         save_config(self._cfg)
@@ -794,17 +846,92 @@ class MainWindow(QMainWindow):
 
     def _create_widget(self, channel: Channel, index: int) -> StreamWidget:
         w = StreamWidget(channel, index, self._cfg, self._vlc_instance, self._grid_page)
-        w.clicked.connect(self._set_active)
-        w.double_clicked.connect(self._on_double_click)
+        w.clicked.connect(self._on_stream_clicked)
+        w.context_menu_requested.connect(self._on_stream_context_menu)
         self._widgets.append(w)
         return w
 
-    def _on_double_click(self, index: int) -> None:
-        self._set_active(index)
+    def _on_stream_clicked(self, index: int) -> None:
+        if 0 <= index < len(self._widgets) and self._widgets[index]._is_detached:
+            return
         if self._grid_mode:
+            self._set_active(index)
             self._grid_mode = False
             self._act_grid.setChecked(False)
-        self._show_single(index)
+            self._tb_grid.setChecked(False)
+            self._show_single(index)
+        else:
+            self._grid_mode = True
+            self._act_grid.setChecked(True)
+            self._tb_grid.setChecked(True)
+            self._cursor_timer.stop()
+            self._show_overlay()
+            self.statusBar().show()
+            self._rebuild_grid()
+            self._stack.setCurrentIndex(1)
+
+    def _on_stream_context_menu(self, index: int, pos) -> None:
+        menu = QMenu(self)
+        w = self._widgets[index]
+        if not w._is_detached:
+            act_detach = menu.addAction("⬔ Detach")
+            act_detach.triggered.connect(lambda: self._detach_stream(index))
+        act_fav = menu.addAction("★ Add to Favourites")
+        act_fav.triggered.connect(lambda: self._add_to_favourites_at(index))
+        menu.addSeparator()
+        act_remove = menu.addAction("✕ Remove")
+        act_remove.triggered.connect(lambda: self._remove_stream_at(index))
+        menu.exec(pos)
+
+    def _add_to_favourites_at(self, index: int) -> None:
+        if index < 0 or index >= len(self._channels):
+            return
+        ch = self._channels[index]
+        for f in self._cfg.favourites:
+            if f.get("url") == ch.url:
+                return
+        self._cfg.favourites.append(ch.to_dict())
+        save_config(self._cfg)
+
+    def _detach_stream(self, index: int) -> None:
+        if index < 0 or index >= len(self._widgets):
+            return
+        w = self._widgets[index]
+        if w._is_detached:
+            return
+        # Switch to grid mode if currently in single-stream view.
+        if not self._grid_mode:
+            self._grid_mode = True
+            self._act_grid.setChecked(True)
+            self._tb_grid.setChecked(True)
+            self._cursor_timer.stop()
+            self._show_overlay()
+            self.statusBar().show()
+        win = _DetachedStreamWindow(w)
+        win.reattach_requested.connect(self._reattach_stream)
+        self._detached_windows[index] = win
+        win.show()
+        # Pick a new active stream from visible widgets.
+        visible = self._visible_widgets
+        if visible and (self._active_index == index):
+            self._set_active(visible[0].index)
+        self._rebuild_grid()
+        self._stack.setCurrentIndex(1)
+
+    def _reattach_stream(self, index: int) -> None:
+        win = self._detached_windows.pop(index, None)
+        if win is None:
+            return
+        w = win.stream_widget
+        w._is_detached = False
+        w.setParent(self._grid_page)  # type: ignore[arg-type]
+        w._embedded_handle = 0
+        self._rebuild_grid()
+        QTimer.singleShot(50, w.embed_player)
+
+    def _on_double_click(self, index: int) -> None:
+        # Double-click kept for backward compat; behaves same as single click.
+        self._on_stream_clicked(index)
 
     def _rebuild_grid(self) -> None:
         # Remove all widgets from grid layout
@@ -816,20 +943,23 @@ class MainWindow(QMainWindow):
             if item and item.widget():
                 item.widget().setParent(self._grid_page)  # type: ignore[arg-type]
 
-        # Hide all widgets; only invalidate embed handle if parent changed.
+        # Hide all non-detached widgets; invalidate embed handle if parent changed.
         for w in self._widgets:
+            if w._is_detached:
+                continue
             if w.parent() is not self._grid_page:
                 w.setParent(self._grid_page)  # type: ignore[arg-type]
                 w._embedded_handle = 0
             w.hide()
 
-        # Show only the current page
+        # Show only the current page of visible (non-detached) widgets
+        visible = self._visible_widgets
         cols = max(1, self._effective_grid[1])
         per_page = self._streams_per_page
         start = self._current_page * per_page
-        end = min(start + per_page, len(self._widgets))
+        end = min(start + per_page, len(visible))
 
-        for i, w in enumerate(self._widgets[start:end]):
+        for i, w in enumerate(visible[start:end]):
             row, col = divmod(i, cols)
             self._grid_layout.addWidget(w, row, col)
             w.set_border_visible(True)
@@ -842,8 +972,10 @@ class MainWindow(QMainWindow):
         self._lbl_page.setText(f"Page {self._current_page + 1} / {pc}")
         self._btn_prev.setEnabled(self._current_page > 0)
         self._btn_next.setEnabled(self._current_page < pc - 1)
-        if pc <= 1:
-            self._page_bar.hide()
+        # Hide pagination controls (not the whole toolbar) when only one page.
+        self._btn_prev.setVisible(pc > 1)
+        self._btn_next.setVisible(pc > 1)
+        self._lbl_page.setVisible(pc > 1)
 
         self._update_empty_state()
 

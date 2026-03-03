@@ -63,26 +63,22 @@ class AddStreamDialog(QDialog):
         return Channel(url=self._url.text().strip(), name=self._name.text().strip())
 
 
-# ── Load Playlist ─────────────────────────────────────────────────────────────
+# ── Add Source (Stream URL + Playlist) ────────────────────────────────────────
 
-class LoadPlaylistDialog(QDialog):
-    """Prompt for a local M3U file or a remote URL."""
+
+class AddSourceDialog(QDialog):
+    """Tabbed dialog: add a stream URL *or* load a playlist."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Load Playlist")
+        self.setWindowTitle("Add Source")
         self.setMinimumWidth(500)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Playlist file path or URL (.m3u / .m3u8):"))
 
-        row = QHBoxLayout()
-        self._src = QLineEdit()
-        self._src.setPlaceholderText("/path/to/playlist.m3u  or  http://host/pl.m3u8")
-        row.addWidget(self._src)
-        browse = QPushButton("Browse…")
-        browse.clicked.connect(self._browse)
-        row.addWidget(browse)
-        layout.addLayout(row)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._stream_tab(), "Stream URL")
+        self._tabs.addTab(self._playlist_tab(), "Playlist")
+        layout.addWidget(self._tabs)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -90,6 +86,38 @@ class LoadPlaylistDialog(QDialog):
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _stream_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Stream URL (RTSP, HTTP, HLS, or local file):"))
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("rtsp://… or http://… or /path/to/file.mp4")
+        lay.addWidget(self._url)
+        lay.addWidget(QLabel("Display name (optional):"))
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("My Camera 1")
+        lay.addWidget(self._name)
+        self._url.returnPressed.connect(self._accept)
+        self._name.returnPressed.connect(self._accept)
+        lay.addStretch()
+        return w
+
+    def _playlist_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Playlist file path or URL (.m3u / .m3u8):"))
+        row = QHBoxLayout()
+        self._src = QLineEdit()
+        self._src.setPlaceholderText("/path/to/playlist.m3u  or  http://host/pl.m3u8")
+        row.addWidget(self._src)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        row.addWidget(browse)
+        lay.addLayout(row)
+        self._src.returnPressed.connect(self._accept)
+        lay.addStretch()
+        return w
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -99,10 +127,20 @@ class LoadPlaylistDialog(QDialog):
             self._src.setText(path)
 
     def _accept(self) -> None:
-        if self._src.text().strip():
-            self.accept()
+        if self._tabs.currentIndex() == 0:
+            if self._url.text().strip():
+                self.accept()
+        else:
+            if self._src.text().strip():
+                self.accept()
 
-    def source(self) -> str:
+    def active_tab(self) -> int:
+        return self._tabs.currentIndex()
+
+    def result_channel(self) -> Channel:
+        return Channel(url=self._url.text().strip(), name=self._name.text().strip())
+
+    def playlist_source(self) -> str:
         return self._src.text().strip()
 
 
@@ -393,6 +431,26 @@ class SettingsDialog(QDialog):
         drm_note.setStyleSheet("color: gray; font-size: 11px;")
         form.addRow(drm_note)
 
+        form.addRow(QLabel(""))   # spacer
+
+        # ── Upscaling ────────────────────────────────────────────────────────
+        grp_upscale = QGroupBox("Upscaling")
+        uf = QFormLayout(grp_upscale)
+
+        self._upscale_enabled = QCheckBox("Enable high-quality upscaling (Lanczos)")
+        self._upscale_enabled.setChecked(self._cfg.upscale_enabled)
+        uf.addRow(self._upscale_enabled)
+
+        upscale_note = QLabel(
+            "Uses Lanczos algorithm for sharper scaling of low-res streams.\n"
+            "May use slightly more CPU."
+        )
+        upscale_note.setWordWrap(True)
+        upscale_note.setStyleSheet("color: gray; font-size: 11px;")
+        uf.addRow(upscale_note)
+
+        form.addRow(grp_upscale)
+
         return w
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -411,166 +469,172 @@ class SettingsDialog(QDialog):
         self._cfg.vlc_network_cache = self._net_cache.value()
         self._cfg.vlc_live_cache = self._live_cache.value()
         self._cfg.cenc_decryption_key = self._cenc_key.text().strip()
+        self._cfg.upscale_enabled = self._upscale_enabled.isChecked()
         self.accept()
 
 
-# ── Favourites ────────────────────────────────────────────────────────────────
+# ── Favourites (Streams + Playlists tabs) ─────────────────────────────────────
 
 class FavouritesDialog(QDialog):
-    """Manage favourite channels: add, remove, reorder, and load."""
+    """Unified favourites: Streams tab + Saved Playlists tab."""
 
-    def __init__(self, favourites: list[dict], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        favourites: list[dict],
+        saved_playlists: list[dict],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Favourites")
-        self.setMinimumSize(560, 420)
+        self.setMinimumSize(580, 480)
         layout = QVBoxLayout(self)
 
-        self._list = QListWidget()
-        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._streams_tab(favourites), "★ Streams")
+        self._tabs.addTab(self._playlists_tab(saved_playlists), "♫ Playlists")
+        layout.addWidget(self._tabs)
+
+        btns = QHBoxLayout()
+        btn_load = QPushButton("Load")
+        btn_load.setToolTip("Load checked streams or selected playlist")
+        btn_load.clicked.connect(self.accept)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(btn_load)
+        btns.addWidget(btn_close)
+        layout.addLayout(btns)
+
+    # ── Streams tab ──────────────────────────────────────────────────────────
+
+    def _streams_tab(self, favourites: list[dict]) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        self._fav_list = QListWidget()
+        self._fav_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         for fav in favourites:
-            self._add_item(Channel.from_dict(fav))
-        layout.addWidget(self._list)
+            self._add_fav_item(Channel.from_dict(fav))
+        layout.addWidget(self._fav_list)
 
         btn_row = QHBoxLayout()
         btn_up = QPushButton("▲ Up")
-        btn_up.clicked.connect(self._move_up)
+        btn_up.clicked.connect(self._fav_move_up)
         btn_down = QPushButton("▼ Down")
-        btn_down.clicked.connect(self._move_down)
+        btn_down.clicked.connect(self._fav_move_down)
         btn_remove = QPushButton("✕ Remove")
-        btn_remove.clicked.connect(self._remove)
+        btn_remove.clicked.connect(self._fav_remove)
         btn_add = QPushButton("+ Add…")
-        btn_add.clicked.connect(self._add)
+        btn_add.clicked.connect(self._fav_add)
         btn_row.addWidget(btn_up)
         btn_row.addWidget(btn_down)
         btn_row.addWidget(btn_remove)
         btn_row.addStretch()
         btn_row.addWidget(btn_add)
         layout.addLayout(btn_row)
+        return w
 
-        btns = QHBoxLayout()
-        btn_load = QPushButton("Load Checked")
-        btn_load.setToolTip("Add checked channels to the current view")
-        btn_load.clicked.connect(self.accept)
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.reject)
-        btns.addStretch()
-        btns.addWidget(btn_load)
-        btns.addWidget(btn_close)
-        layout.addLayout(btns)
-
-    def _add_item(self, ch: Channel) -> None:
+    def _add_fav_item(self, ch: Channel) -> None:
         item = QListWidgetItem(f"★ {ch.display_name()}  —  {ch.url}")
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(Qt.CheckState.Checked)
         item.setData(Qt.ItemDataRole.UserRole, ch.to_dict())
-        self._list.addItem(item)
+        self._fav_list.addItem(item)
 
-    def _move_up(self) -> None:
-        row = self._list.currentRow()
+    def _fav_move_up(self) -> None:
+        row = self._fav_list.currentRow()
         if row > 0:
-            item = self._list.takeItem(row)
-            self._list.insertItem(row - 1, item)
-            self._list.setCurrentRow(row - 1)
+            item = self._fav_list.takeItem(row)
+            self._fav_list.insertItem(row - 1, item)
+            self._fav_list.setCurrentRow(row - 1)
 
-    def _move_down(self) -> None:
-        row = self._list.currentRow()
-        if 0 <= row < self._list.count() - 1:
-            item = self._list.takeItem(row)
-            self._list.insertItem(row + 1, item)
-            self._list.setCurrentRow(row + 1)
+    def _fav_move_down(self) -> None:
+        row = self._fav_list.currentRow()
+        if 0 <= row < self._fav_list.count() - 1:
+            item = self._fav_list.takeItem(row)
+            self._fav_list.insertItem(row + 1, item)
+            self._fav_list.setCurrentRow(row + 1)
 
-    def _remove(self) -> None:
-        row = self._list.currentRow()
+    def _fav_remove(self) -> None:
+        row = self._fav_list.currentRow()
         if row >= 0:
-            self._list.takeItem(row)
+            self._fav_list.takeItem(row)
 
-    def _add(self) -> None:
+    def _fav_add(self) -> None:
         dlg = AddStreamDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._add_item(dlg.result_channel())
+            self._add_fav_item(dlg.result_channel())
 
-    def all_favourites(self) -> list[dict]:
-        """Return the full favourites list in current order."""
-        return [
-            self._list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self._list.count())
-        ]
+    # ── Playlists tab ────────────────────────────────────────────────────────
 
-    def checked_channels(self) -> list[Channel]:
-        """Return only the checked channels (for loading)."""
-        return [
-            Channel.from_dict(self._list.item(i).data(Qt.ItemDataRole.UserRole))
-            for i in range(self._list.count())
-            if self._list.item(i).checkState() == Qt.CheckState.Checked
-        ]
+    def _playlists_tab(self, playlists: list[dict]) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
 
-
-# ── Saved Playlists ───────────────────────────────────────────────────────────
-
-class PlaylistManagerDialog(QDialog):
-    """Manage saved playlist URLs: add, remove, and load."""
-
-    def __init__(self, playlists: list[dict], parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Saved Playlists")
-        self.setMinimumSize(560, 360)
-        layout = QVBoxLayout(self)
-
-        self._list = QListWidget()
-        self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._pl_list = QListWidget()
+        self._pl_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         for pl in playlists:
             item = QListWidgetItem(f"{pl.get('name', 'Untitled')}  —  {pl['url']}")
             item.setData(Qt.ItemDataRole.UserRole, pl)
-            self._list.addItem(item)
-        layout.addWidget(self._list)
+            self._pl_list.addItem(item)
+        layout.addWidget(self._pl_list)
 
         btn_row = QHBoxLayout()
         btn_add = QPushButton("+ Add")
-        btn_add.clicked.connect(self._add)
+        btn_add.clicked.connect(self._pl_add)
         btn_remove = QPushButton("✕ Remove")
-        btn_remove.clicked.connect(self._remove)
+        btn_remove.clicked.connect(self._pl_remove)
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_remove)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        btns = QHBoxLayout()
-        btn_load = QPushButton("Load Selected")
-        btn_load.setToolTip("Parse the selected playlist and pick channels")
-        btn_load.clicked.connect(self.accept)
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.reject)
-        btns.addStretch()
-        btns.addWidget(btn_load)
-        btns.addWidget(btn_close)
-        layout.addLayout(btns)
+        self._pl_list.itemDoubleClicked.connect(lambda _: self.accept())
+        return w
 
-        self._list.itemDoubleClicked.connect(lambda _: self.accept())
-
-    def _add(self) -> None:
+    def _pl_add(self) -> None:
         dlg = _AddPlaylistDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             pl = dlg.result()
             item = QListWidgetItem(f"{pl['name']}  —  {pl['url']}")
             item.setData(Qt.ItemDataRole.UserRole, pl)
-            self._list.addItem(item)
+            self._pl_list.addItem(item)
 
-    def _remove(self) -> None:
-        row = self._list.currentRow()
+    def _pl_remove(self) -> None:
+        row = self._pl_list.currentRow()
         if row >= 0:
-            self._list.takeItem(row)
+            self._pl_list.takeItem(row)
+
+    # ── Public result accessors ──────────────────────────────────────────────
+
+    def active_tab(self) -> int:
+        return self._tabs.currentIndex()
+
+    def all_favourites(self) -> list[dict]:
+        return [
+            self._fav_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._fav_list.count())
+        ]
+
+    def checked_channels(self) -> list[Channel]:
+        return [
+            Channel.from_dict(self._fav_list.item(i).data(Qt.ItemDataRole.UserRole))
+            for i in range(self._fav_list.count())
+            if self._fav_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
 
     def all_playlists(self) -> list[dict]:
-        """Return all playlists in current order."""
         return [
-            self._list.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self._list.count())
+            self._pl_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._pl_list.count())
         ]
 
     def selected_playlist(self) -> dict | None:
-        """Return the currently selected playlist."""
-        item = self._list.currentItem()
+        item = self._pl_list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+
+# ── Saved Playlists (private helper) ─────────────────────────────────────────
 
 
 class _AddPlaylistDialog(QDialog):
@@ -610,59 +674,38 @@ class _AddPlaylistDialog(QDialog):
         }
 
 
-# ── Grid Presets ──────────────────────────────────────────────────────────────
+# ── Grid Presets (Save + Load) ────────────────────────────────────────────────
 
 
-class SaveGridPresetDialog(QDialog):
-    """Prompt for a name when saving the current grid as a preset."""
+class GridPresetsDialog(QDialog):
+    """Manage grid presets: load existing, save current, or delete."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Save Grid Preset")
-        self.setMinimumWidth(380)
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("Preset name:"))
-        self._name = QLineEdit()
-        self._name.setPlaceholderText("e.g. News 2×2")
-        layout.addWidget(self._name)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self._accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-    def _accept(self) -> None:
-        if self._name.text().strip():
-            self.accept()
-
-    def preset_name(self) -> str:
-        return self._name.text().strip()
-
-
-class LoadGridPresetDialog(QDialog):
-    """Select a grid preset to load or delete."""
-
-    def __init__(self, presets: list[dict], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        presets: list[dict],
+        current_channels: list | None = None,
+        current_grid: dict | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Grid Presets")
-        self.setMinimumSize(480, 360)
+        self.setMinimumSize(500, 380)
+        self._current_channels = current_channels
+        self._current_grid = current_grid
         layout = QVBoxLayout(self)
 
         self._list = QListWidget()
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         for p in presets:
-            grid = "dynamic" if p.get("dynamic") else f"{p.get('rows', 2)}×{p.get('cols', 2)}"
-            n_ch = len(p.get("channels", []))
-            item = QListWidgetItem(f"{p['name']}  —  {grid}  ({n_ch} streams)")
-            item.setData(Qt.ItemDataRole.UserRole, p)
-            self._list.addItem(item)
+            self._add_preset_item(p)
         self._list.doubleClicked.connect(self.accept)
         layout.addWidget(self._list)
 
         row = QHBoxLayout()
+        if current_channels:
+            btn_save = QPushButton("Save Current Grid…")
+            btn_save.clicked.connect(self._save_current)
+            row.addWidget(btn_save)
         btn_del = QPushButton("Delete")
         btn_del.clicked.connect(self._remove)
         row.addWidget(btn_del)
@@ -672,9 +715,30 @@ class LoadGridPresetDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Load")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _add_preset_item(self, p: dict) -> None:
+        grid = "dynamic" if p.get("dynamic") else f"{p.get('rows', 2)}×{p.get('cols', 2)}"
+        n_ch = len(p.get("channels", []))
+        item = QListWidgetItem(f"{p['name']}  —  {grid}  ({n_ch} streams)")
+        item.setData(Qt.ItemDataRole.UserRole, p)
+        self._list.addItem(item)
+
+    def _save_current(self) -> None:
+        name, ok = _prompt_text(self, "Save Grid Preset", "Preset name:", "e.g. News 2×2")
+        if not ok or not name:
+            return
+        preset: dict = {
+            "name": name,
+            "rows": self._current_grid.get("rows", 2) if self._current_grid else 2,
+            "cols": self._current_grid.get("cols", 2) if self._current_grid else 2,
+            "dynamic": self._current_grid.get("dynamic", False) if self._current_grid else False,
+            "channels": self._current_channels or [],
+        }
+        self._add_preset_item(preset)
 
     def _remove(self) -> None:
         row = self._list.currentRow()
@@ -690,3 +754,25 @@ class LoadGridPresetDialog(QDialog):
     def selected_preset(self) -> dict | None:
         item = self._list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+
+def _prompt_text(parent, title: str, label: str, placeholder: str = "") -> tuple[str, bool]:
+    """Simple text input dialog (avoids QInputDialog for consistent styling)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setMinimumWidth(360)
+    lay = QVBoxLayout(dlg)
+    lay.addWidget(QLabel(label))
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    lay.addWidget(edit)
+    btns = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    )
+    btns.accepted.connect(dlg.accept)
+    btns.rejected.connect(dlg.reject)
+    lay.addWidget(btns)
+    edit.returnPressed.connect(dlg.accept)
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        return edit.text().strip(), True
+    return "", False

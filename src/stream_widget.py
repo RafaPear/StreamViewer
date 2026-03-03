@@ -4,7 +4,7 @@ import asyncio
 import sys
 
 import vlc
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -48,6 +48,7 @@ class StreamWidget(QWidget):
 
     clicked = pyqtSignal(int)
     double_clicked = pyqtSignal(int)
+    context_menu_requested = pyqtSignal(int, QPoint)
 
     def __init__(
         self,
@@ -67,6 +68,7 @@ class StreamWidget(QWidget):
         self._controls_pinned = True  # always visible in grid mode
         self._restart_requested = False
         self._released = False
+        self._is_detached = False
 
         # VLC
         self._vlc_instance = vlc_instance
@@ -486,6 +488,10 @@ class StreamWidget(QWidget):
         if ev.button() == Qt.MouseButton.LeftButton:
             self.double_clicked.emit(self.index)
         super().mouseDoubleClickEvent(ev)
+
+    def contextMenuEvent(self, ev) -> None:  # noqa: N802
+        pos = ev.globalPosition().toPoint() if hasattr(ev, 'globalPosition') else ev.globalPos()
+        self.context_menu_requested.emit(self.index, pos)
 
     def enterEvent(self, ev) -> None:  # noqa: N802
         self._hovered = True

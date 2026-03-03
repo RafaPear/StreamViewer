@@ -33,6 +33,9 @@ class Config:
     # CENC static key (hex).  M3UPT key: a2226def4bc8f249de2daf36b7c12b1e
     cenc_decryption_key: str = ""
 
+    # ── Upscaling ────────────────────────────────────────────────────────────
+    upscale_enabled: bool = False
+
     # ── Playlist / session ────────────────────────────────────────────────────
     default_playlist: str = "https://m3upt.com/iptv"
     remember_session: bool = True

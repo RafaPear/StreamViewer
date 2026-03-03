@@ -48,6 +48,8 @@ def _media_options(cfg: Config) -> list[str]:
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
+    if cfg.upscale_enabled:
+        opts.append(":swscale-mode=9")
     return opts
 
 
