@@ -432,39 +432,6 @@ class SettingsDialog(QDialog):
         drm_note.setStyleSheet("color: gray; font-size: 11px;")
         form.addRow(drm_note)
 
-        form.addRow(QLabel(""))   # spacer
-
-        # ── Upscaling ────────────────────────────────────────────────────────
-        grp_upscale = QGroupBox("Upscaling (fullscreen only)")
-        uf = QFormLayout(grp_upscale)
-
-        from PyQt6.QtWidgets import QComboBox
-        self._upscale_combo = QComboBox()
-        self._upscale_presets = [
-            ("off", "Off"),
-            ("lanczos", "Lanczos scaling"),
-            ("sharpen_light", "Lanczos + Sharpen (Light)"),
-            ("sharpen_medium", "Lanczos + Sharpen (Medium)"),
-            ("sharpen_strong", "Lanczos + Sharpen (Strong)"),
-            ("sharpen_ultra", "Lanczos + Sharpen (Ultra)"),
-        ]
-        for key, label in self._upscale_presets:
-            self._upscale_combo.addItem(label, key)
-        current = self._cfg.upscale_preset
-        idx = next((i for i, (k, _) in enumerate(self._upscale_presets) if k == current), 0)
-        self._upscale_combo.setCurrentIndex(idx)
-        uf.addRow("Preset:", self._upscale_combo)
-
-        upscale_note = QLabel(
-            "Upscaling uses software decoding for the fullscreen stream.\n"
-            "Higher presets sharpen the image but use more CPU."
-        )
-        upscale_note.setWordWrap(True)
-        upscale_note.setStyleSheet("color: gray; font-size: 11px;")
-        uf.addRow(upscale_note)
-
-        form.addRow(grp_upscale)
-
         return w
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -483,7 +450,6 @@ class SettingsDialog(QDialog):
         self._cfg.vlc_network_cache = self._net_cache.value()
         self._cfg.vlc_live_cache = self._live_cache.value()
         self._cfg.cenc_decryption_key = self._cenc_key.text().strip()
-        self._cfg.upscale_preset = self._upscale_combo.currentData()
         self.accept()
 
 

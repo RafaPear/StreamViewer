@@ -668,13 +668,15 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        if ctrl and key == Qt.Key.Key_Up:
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.remove_active()
+        elif ctrl and key == Qt.Key.Key_Up:
             self._move_stream(-1)
         elif ctrl and key == Qt.Key.Key_Down:
             self._move_stream(1)
-        elif key == Qt.Key.Key_Right:
+        elif key == Qt.Key.Key_Right and self._widgets:
             self._switch_stream((self._active_index + 1) % len(self._widgets))
-        elif key == Qt.Key.Key_Left:
+        elif key == Qt.Key.Key_Left and self._widgets:
             self._switch_stream((self._active_index - 1) % len(self._widgets))
         elif key == Qt.Key.Key_PageUp:
             self._page_prev()
@@ -682,12 +684,8 @@ class MainWindow(QMainWindow):
             self._page_next()
         elif key == Qt.Key.Key_G:
             self._toggle_grid()
-        elif key == Qt.Key.Key_A:
+        elif key in (Qt.Key.Key_A, Qt.Key.Key_L):
             self._action_add_source()
-        elif key == Qt.Key.Key_L:
-            self._action_add_source()
-        elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.remove_active()
         elif key == Qt.Key.Key_Q:
             self.close()
         else:
@@ -768,9 +766,7 @@ class MainWindow(QMainWindow):
             "vlc_network_cache": self._cfg.vlc_network_cache,
             "vlc_live_cache": self._cfg.vlc_live_cache,
             "cenc_decryption_key": self._cfg.cenc_decryption_key,
-            "upscale_preset": self._cfg.upscale_preset,
             "audio_enabled": self._cfg.audio_enabled,
-            "smart_buffer": self._cfg.smart_buffer,
         }
         dlg = SettingsDialog(self._cfg, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -780,7 +776,6 @@ class MainWindow(QMainWindow):
             old["vlc_network_cache"] != self._cfg.vlc_network_cache
             or old["vlc_live_cache"] != self._cfg.vlc_live_cache
             or old["cenc_decryption_key"] != self._cfg.cenc_decryption_key
-            or old["upscale_preset"] != self._cfg.upscale_preset
         )
 
         for w in self._widgets:
@@ -796,11 +791,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Playback settings saved (applies on next reconnect)", 4000
             )
-
-        # Apply upscale change immediately if in single view.
-        if not self._grid_mode and old["upscale_preset"] != self._cfg.upscale_preset:
-            if 0 <= self._active_index < len(self._widgets):
-                self._widgets[self._active_index].set_upscale(self._cfg.upscale_preset)
 
         if self._grid_mode:
             self._rebuild_grid()
@@ -967,9 +957,6 @@ class MainWindow(QMainWindow):
             self._tb_grid.setChecked(True)
             self._cursor_timer.stop()
             self._show_overlay()
-            # Disable upscale enhance when leaving fullscreen.
-            if 0 <= self._active_index < len(self._widgets):
-                self._widgets[self._active_index].set_upscale("off")
             # Restore hand cursor for all widgets in grid mode.
             for w in self._widgets:
                 w.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1140,8 +1127,6 @@ class MainWindow(QMainWindow):
         target.set_border_visible(False)  # no border in single-stream view
         target.set_controls_visible(False)  # hide controls; shown on hover
         target.setCursor(Qt.CursorShape.ArrowCursor)
-        if self._cfg.upscale_preset != "off":
-            target.set_upscale(self._cfg.upscale_preset)
         self.statusBar().hide()
         self._cursor_timer.start()  # start hide-cursor countdown
         self._stack.setCurrentIndex(0)
@@ -1154,9 +1139,6 @@ class MainWindow(QMainWindow):
         if self._grid_mode:
             self._cursor_timer.stop()
             self._show_overlay()
-            # Disable upscale enhance when leaving fullscreen.
-            if 0 <= self._active_index < len(self._widgets):
-                self._widgets[self._active_index].set_upscale("off")
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)

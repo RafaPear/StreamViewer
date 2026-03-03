@@ -57,16 +57,6 @@ def _media_options(cfg: Config) -> list[str]:
 
 def _upscale_options(preset: str) -> list[str]:
     """Per-media VLC options for the given upscale preset (fullscreen only)."""
-    if preset == "lanczos":
-        return [":swscale-mode=9"]
-    if preset == "sharpen_light":
-        return [":swscale-mode=9", ":video-filter=sharpen", ":sharpen-sigma=0.06"]
-    if preset == "sharpen_medium":
-        return [":swscale-mode=9", ":video-filter=sharpen", ":sharpen-sigma=0.15"]
-    if preset == "sharpen_strong":
-        return [":swscale-mode=9", ":video-filter=sharpen", ":sharpen-sigma=0.30"]
-    if preset == "sharpen_ultra":
-        return [":swscale-mode=9", ":video-filter=sharpen", ":sharpen-sigma=0.50"]
     return []
 
 
