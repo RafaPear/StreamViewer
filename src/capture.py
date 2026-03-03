@@ -16,6 +16,7 @@ Design
 
 import asyncio
 import logging
+import time
 
 import vlc
 
@@ -107,7 +108,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
             # Brief pause before (re)starting – gives VLC time to clean up
             # the previous player state and prevents rapid stop→play segfaults.
-            await asyncio.sleep(0.3)
+            # Stagger restarts across streams to avoid simultaneous VLC calls.
+            _safe(widget.stop)
+            jitter = widget.index * 0.4
+            await asyncio.sleep(0.5 + jitter)
 
             options = _media_options(cfg)
             url = widget._quality_url or widget.channel.url
@@ -150,6 +154,14 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 if widget._active != was_active:
                     _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                     was_active = widget._active
+
+                # Skip state-based error detection during layout transitions.
+                # Reparenting the widget gives VLC a new rendering surface which
+                # can briefly flash non-Playing states.
+                if time.monotonic() - widget._last_embed_time < 3.0:
+                    grace_ticks += 1
+                    await asyncio.sleep(_POLL_INTERVAL)
+                    continue
 
                 state = _safe(widget.get_state, default=vlc.State.Error)
                 if state is None:

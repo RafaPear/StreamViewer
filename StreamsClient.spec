@@ -7,6 +7,14 @@ from pathlib import Path
 block_cipher = None
 app_root = Path(SPECPATH)
 
+# Read version from source.
+_version_file = app_root / "src" / "version.py"
+_version = "1.0.0"
+for _line in _version_file.read_text().splitlines():
+    if _line.startswith("__version__"):
+        _version = _line.split("=")[1].strip().strip('"').strip("'")
+        break
+
 a = Analysis(
     [str(app_root / "src" / "streams_client.py")],
     pathex=[str(app_root / "src")],
@@ -18,6 +26,8 @@ a = Analysis(
         "PyQt6.QtCore",
         "PyQt6.QtGui",
         "PyQt6.QtWidgets",
+        "version",
+        "updater",
     ],
     hookspath=[],
     hooksconfig={},
@@ -63,7 +73,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.streamsclient.app",
         info_plist={
             "CFBundleDisplayName": "StreamsClient",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleShortVersionString": _version,
             "CFBundleName": "StreamsClient",
             "NSHighResolutionCapable": True,
             "NSRequiresAquaSystemAppearance": False,  # support dark mode

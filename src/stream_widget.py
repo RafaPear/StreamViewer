@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import time
 
 import vlc
 from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal
@@ -76,6 +77,7 @@ class StreamWidget(QWidget):
         self._media: vlc.Media | None = None
         self._user_paused = False
         self._embedded_handle: int = 0
+        self._last_embed_time: float = 0.0
 
         # Frame-drop tracking
         self._frame_drops = 0
@@ -238,6 +240,7 @@ class StreamWidget(QWidget):
         if handle == self._embedded_handle:
             return
         self._embedded_handle = handle
+        self._last_embed_time = time.monotonic()
         try:
             if sys.platform == "darwin":
                 self._player.set_nsobject(handle)
@@ -251,6 +254,10 @@ class StreamWidget(QWidget):
     def play_url(self, url: str, options: list[str] | None = None) -> None:
         if self._released:
             return
+        try:
+            self._player.stop()
+        except Exception:
+            pass
         try:
             media = self._vlc_instance.media_new(url)
             if options:

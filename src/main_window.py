@@ -508,6 +508,20 @@ class MainWindow(QMainWindow):
         )
         view.addAction(act_fs)
 
+        # ── Help menu ────────────────────────────────────────────────────────
+        help_menu = mb.addMenu("&Help")
+
+        act_update = QAction("Check for &Updates...", self)
+        act_update.triggered.connect(self._action_check_update)
+        help_menu.addAction(act_update)
+
+        help_menu.addSeparator()
+
+        from version import __version__
+        act_about = QAction(f"StreamsClient v{__version__}", self)
+        act_about.setEnabled(False)
+        help_menu.addAction(act_about)
+
     # ── Event loop wiring ─────────────────────────────────────────────────────
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -784,6 +798,53 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
 
         save_config(self._cfg)
+
+    def _action_check_update(self) -> None:
+        from updater import check_for_update, download_and_apply
+        from version import __version__
+
+        self.statusBar().showMessage("Checking for updates...", 5000)
+        QApplication.processEvents()
+
+        info = check_for_update()
+        if info is None:
+            QMessageBox.information(
+                self, "Up to Date",
+                f"You are running the latest version (v{__version__}).",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Update Available",
+            f"Version {info['version']} is available (you have v{__version__}).\n\n"
+            f"{info.get('notes', '')[:300]}\n\n"
+            "Download and install the update?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.statusBar().showMessage("Downloading update...", 0)
+        QApplication.processEvents()
+
+        def _progress(downloaded, total):
+            pct = int(downloaded / total * 100)
+            self.statusBar().showMessage(f"Downloading update... {pct}%", 0)
+            QApplication.processEvents()
+
+        ok = download_and_apply(info["url"], on_progress=_progress)
+        if ok:
+            QMessageBox.information(
+                self, "Update Ready",
+                "The update has been downloaded.\n"
+                "The app will now restart to apply it.",
+            )
+            self.close()
+        else:
+            QMessageBox.warning(
+                self, "Update Failed",
+                "Failed to apply the update. Check the log for details.",
+            )
 
     # ── Stream reorder ────────────────────────────────────────────────────────
 
