@@ -75,15 +75,22 @@ _REASON_ENDED = "ended"          # stream ended cleanly (seamless reconnect)
 _REASON_ERROR = "error"          # stream error / timeout / stall
 
 
-def _media_options(cfg: Config) -> list[str]:
-    """Build per-media VLC options from config."""
+def _media_options(cfg: Config, fast: bool = False) -> list[str]:
+    """Build per-media VLC options from config.
+
+    *fast* uses minimal caching for quick reconnects (seamless media swap).
+    """
+    if fast:
+        nc, lc = 1500, 1000
+    else:
+        nc, lc = cfg.vlc_network_cache, cfg.vlc_live_cache
     opts = [
-        f":network-caching={cfg.vlc_network_cache}",
-        f":live-caching={cfg.vlc_live_cache}",
+        f":network-caching={nc}",
+        f":live-caching={lc}",
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
-        ":http-reconnect=true",     # reconnect at HTTP level (no Ended state)
-        ":http-continuous=true",    # keep reading past EOF on live streams
+        ":http-reconnect=true",
+        ":http-continuous=true",
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
@@ -130,9 +137,9 @@ def _safe(fn, *args, default=None):
         return default
 
 
-def _build_options(widget, cfg: Config) -> tuple[str, list[str]]:
+def _build_options(widget, cfg: Config, fast: bool = False) -> tuple[str, list[str]]:
     """Return (url, options) for the stream, including upscale if active."""
-    options = _media_options(cfg)
+    options = _media_options(cfg, fast=fast)
     upscale_preset = getattr(widget, '_upscale_preset', 'off')
     if upscale_preset != 'off':
         options.extend(_upscale_options(upscale_preset))
@@ -373,20 +380,30 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 elif state == vlc.State.Ended and m["started"]:
                     m["terminal_ticks"] += 1
                     if m["terminal_ticks"] * _POLL_INTERVAL >= _ENDED_CONFIRM:
-                        # VLC's http-reconnect didn't recover within the
-                        # confirmation window.  Try a seamless media swap
-                        # (keeps last frame visible), else fall back to
-                        # a full stop+restart.
-                        url, options = _build_options(widget, cfg)
+                        # 1) Try replay — reuses decoder pipeline, no rebuffering.
+                        _safe(widget._player.play)
+                        await asyncio.sleep(0.3)
+                        rs = _safe(widget.get_state, default=vlc.State.Error)
+                        if rs in (vlc.State.Opening, vlc.State.Buffering,
+                                  vlc.State.Playing):
+                            logger.debug("[%s] ended recovery via play()", name)
+                            m["terminal_ticks"] = 0
+                            m["buffer_ticks"] = 0
+                            m["stall_ticks"] = 0
+                            m["last_time"] = -1
+                            continue
+
+                        # 2) Seamless media swap with low cache for fast start.
+                        url, options = _build_options(widget, cfg, fast=True)
                         try:
                             widget.play_url(url, options, seamless=True)
                         except Exception:
                             break_reason = _REASON_ENDED
                             break
                         await asyncio.sleep(0.5)
-                        new_state = _safe(widget.get_state, default=vlc.State.Error)
-                        if new_state in (vlc.State.Opening, vlc.State.Buffering,
-                                         vlc.State.Playing):
+                        ns = _safe(widget.get_state, default=vlc.State.Error)
+                        if ns in (vlc.State.Opening, vlc.State.Buffering,
+                                  vlc.State.Playing):
                             logger.debug("[%s] seamless reconnect (no stop)", name)
                             attempt = 0
                             m["terminal_ticks"] = 0
@@ -398,7 +415,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             continue
                         else:
                             logger.debug("[%s] seamless failed (state=%s), full reconnect",
-                                         name, new_state)
+                                         name, ns)
                             break_reason = _REASON_ENDED
                             break
 
