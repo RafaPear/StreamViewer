@@ -320,6 +320,15 @@ class StreamWidget(QWidget):
             return
         try:
             self._player.audio_set_mute(not active)
+            self._player.audio_set_volume(100 if active else 0)
+            # Force-select first audio track if unmuting (some streams
+            # don't auto-select their audio track).
+            if active:
+                tracks = self._player.audio_get_track_description() or []
+                for tid, _ in tracks:
+                    if tid >= 0:  # skip -1 ("Disable")
+                        self._player.audio_set_track(tid)
+                        break
         except Exception:
             pass
         self._btn_mute.setText("🔊" if active else "🔇")
@@ -328,9 +337,16 @@ class StreamWidget(QWidget):
         """Re-apply current mute state to VLC after audio subsystem inits."""
         if self._released:
             return
-        muted = self._btn_mute.text() == "🔇"
+        active = self._btn_mute.text() == "🔊"
         try:
-            self._player.audio_set_mute(muted)
+            self._player.audio_set_mute(not active)
+            self._player.audio_set_volume(100 if active else 0)
+            if active:
+                tracks = self._player.audio_get_track_description() or []
+                for tid, _ in tracks:
+                    if tid >= 0:
+                        self._player.audio_set_track(tid)
+                        break
         except Exception:
             pass
 
