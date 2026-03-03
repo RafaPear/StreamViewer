@@ -252,13 +252,15 @@ class StreamWidget(QWidget):
         except Exception:
             pass
 
-    def play_url(self, url: str, options: list[str] | None = None) -> None:
+    def play_url(self, url: str, options: list[str] | None = None,
+                 seamless: bool = False) -> None:
         if self._released:
             return
-        try:
-            self._player.stop()
-        except Exception:
-            pass
+        if not seamless:
+            try:
+                self._player.stop()
+            except Exception:
+                pass
         try:
             media = self._vlc_instance.media_new(url)
             if options:

@@ -13,8 +13,9 @@ Design
   network hiccups.
 * Stall detection catches frozen streams (Playing state but no progress).
 * Seamless reconnect: when a stream ends cleanly (e.g. IPTV server
-  closes the HTTP connection), we immediately create a fresh media
-  object and reconnect without showing any status to the user.
+  closes the HTTP connection), we create a fresh media via set_media()
+  WITHOUT calling stop() – VLC keeps the last frame visible during
+  the transition, eliminating black-screen flicker.
 """
 
 import asyncio
@@ -47,10 +48,8 @@ _EMBED_GRACE = 3.0
 _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
-# Seconds to confirm Ended state before attempting quick play().
-_ENDED_CONFIRM = 0.6
-# Quick play: seconds to wait for Playing state after stop→play on Ended.
-_QUICK_PLAY_WAIT = 2.0
+# Seconds to confirm Ended state before seamless reconnect.
+_ENDED_CONFIRM = 0.4
 # Smart buffer: minimum stall threshold (seconds).
 _SMART_MIN_SECS = 8.0
 # Smart buffer: how many seconds of playback to observe for auto-tuning.
@@ -130,29 +129,23 @@ def _build_options(widget, cfg: Config) -> tuple[str, list[str]]:
     return url, options
 
 
-async def _quick_play(widget, name: str) -> bool:
-    """Stop→play on the existing media.  Returns True if Playing resumes.
-
-    Much faster than a full reconnect — avoids black screen because VLC
-    keeps the last frame visible until new data arrives.
-    """
-    if widget._released or widget._restart_requested:
-        return False
-    _safe(widget.stop)
-    await asyncio.sleep(0.1)
-    try:
-        widget._player.play()
-    except Exception:
-        return False
-    for _ in range(int(_QUICK_PLAY_WAIT / _POLL_INTERVAL)):
-        await asyncio.sleep(_POLL_INTERVAL)
-        if widget._released or widget._restart_requested:
-            return False
-        s = _safe(widget.get_state, default=vlc.State.Error)
-        if s == vlc.State.Playing:
-            logger.info("[%s] quick play succeeded", name)
-            return True
-    return False
+def _reset_monitor_state() -> dict:
+    """Return a fresh set of monitoring counters."""
+    return dict(
+        started=False,
+        grace_ticks=0,
+        connect_ticks=0,
+        buffer_ticks=0,
+        stall_ticks=0,
+        last_time=-1,
+        terminal_ticks=0,
+        last_read_bytes=-1,
+        read_stall_ticks=0,
+        play_start_mono=0.0,
+        max_data_gap=0.0,
+        learning=True,
+        smart_threshold=_SMART_MIN_SECS,
+    )
 
 
 async def capture_loop(widget, loop, cfg: Config) -> None:
@@ -165,7 +158,6 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
     attempt = 0
     max_retries = cfg.max_retries  # 0 = unlimited
     name = widget.channel.display_name()
-    seamless = False  # True when reconnecting after a clean Ended
 
     try:
         while True:
@@ -176,27 +168,20 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             attempt += 1
 
             if max_retries and attempt > max_retries:
-                _safe(widget.show_status, "Connection failed — no more retries", "error")
+                _safe(widget.show_status, "Connection failed \u2014 no more retries", "error")
                 logger.error("[%s] max retries (%d) reached", name, max_retries)
                 return
 
             # ── Status message ────────────────────────────────────────────
-            if seamless:
-                pass  # silent reconnect — no visible indicator
-            elif attempt == 1:
-                _safe(widget.show_status, "Connecting…", "info")
+            if attempt == 1:
+                _safe(widget.show_status, "Connecting\u2026", "info")
             else:
-                _safe(widget.show_status, "Reconnecting…", "warn")
+                _safe(widget.show_status, "Reconnecting\u2026", "warn")
 
             # ── Pre-start delay ───────────────────────────────────────────
             _safe(widget.stop)
-            if seamless:
-                # Minimal delay for seamless reconnect (Ended → fresh media).
-                await asyncio.sleep(0.15)
-            else:
-                jitter = widget.index * 0.3
-                await asyncio.sleep(0.5 + jitter)
-            seamless = False
+            jitter = widget.index * 0.3
+            await asyncio.sleep(0.5 + jitter)
 
             # ── Start playback ────────────────────────────────────────────
             url, options = _build_options(widget, cfg)
@@ -210,23 +195,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
             logger.info("[%s] starting VLC playback (attempt %d)", name, attempt)
 
-            started = False
             was_active = widget._active
-            grace_ticks = 0
-            connect_ticks = 0
-            buffer_ticks = 0
-            stall_ticks = 0
-            last_time = -1
-            terminal_ticks = 0
             break_reason = _REASON_ERROR
-            # Smart buffer state.
             smart = cfg.smart_buffer
-            last_read_bytes = -1
-            read_stall_ticks = 0
-            play_start_mono = 0.0       # monotonic time when Playing started
-            max_data_gap = 0.0          # longest observed gap between data bursts
-            learning = True             # still measuring burst interval
-            smart_threshold = _SMART_MIN_SECS  # auto-tuned after learning phase
+            m = _reset_monitor_state()
 
             # ── Inner monitoring loop ─────────────────────────────────────
             while True:
@@ -245,7 +217,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
                 # Skip state monitoring during layout transitions (reparent).
                 if time.monotonic() - widget._last_embed_time < _EMBED_GRACE:
-                    grace_ticks += 1
+                    m["grace_ticks"] += 1
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
 
@@ -255,9 +227,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
                 # ── Playing ───────────────────────────────────────────────
                 if state == vlc.State.Playing:
-                    if not started:
-                        started = True
-                        play_start_mono = time.monotonic()
+                    if not m["started"]:
+                        m["started"] = True
+                        m["play_start_mono"] = time.monotonic()
                         _safe(widget.hide_status)
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                         QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
@@ -265,17 +237,17 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         attempt = 0
                         logger.info("[%s] playback started", name)
 
-                    buffer_ticks = 0
-                    terminal_ticks = 0
+                    m["buffer_ticks"] = 0
+                    m["terminal_ticks"] = 0
 
                     cur_time = _safe(lambda: widget._player.get_time(), default=-1)
-                    if cur_time is not None and cur_time == last_time:
-                        stall_ticks += 1
+                    if cur_time is not None and cur_time == m["last_time"]:
+                        m["stall_ticks"] += 1
                     else:
-                        stall_ticks = 0
-                    last_time = cur_time if cur_time is not None else last_time
+                        m["stall_ticks"] = 0
+                    m["last_time"] = cur_time if cur_time is not None else m["last_time"]
 
-                    if stall_ticks * _POLL_INTERVAL >= _STALL_TIMEOUT:
+                    if m["stall_ticks"] * _POLL_INTERVAL >= _STALL_TIMEOUT:
                         logger.warning("[%s] stall detected (no progress for %.0fs)",
                                        name, _STALL_TIMEOUT)
                         _safe(widget.show_status, "Stream stalled", "warn")
@@ -288,43 +260,39 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             stats = vlc.MediaStats()
                             if widget._media.get_stats(stats):
                                 rb = stats.read_bytes
-                                if last_read_bytes >= 0:
-                                    if rb == last_read_bytes:
-                                        read_stall_ticks += 1
-                                        gap = read_stall_ticks * _POLL_INTERVAL
-                                        # During learning phase, record the
-                                        # longest gap between data bursts.
-                                        if learning:
-                                            max_data_gap = max(max_data_gap, gap)
+                                if m["last_read_bytes"] >= 0:
+                                    if rb == m["last_read_bytes"]:
+                                        m["read_stall_ticks"] += 1
+                                        gap = m["read_stall_ticks"] * _POLL_INTERVAL
+                                        if m["learning"]:
+                                            m["max_data_gap"] = max(m["max_data_gap"], gap)
                                     else:
-                                        read_stall_ticks = 0
+                                        m["read_stall_ticks"] = 0
                                 else:
-                                    read_stall_ticks = 0
-                                last_read_bytes = rb
+                                    m["read_stall_ticks"] = 0
+                                m["last_read_bytes"] = rb
 
                                 # End learning phase after _SMART_LEARN_SECS.
-                                if learning and (time.monotonic() - play_start_mono) >= _SMART_LEARN_SECS:
-                                    learning = False
-                                    smart_threshold = max(
-                                        max_data_gap * _SMART_GAP_MULT,
+                                if m["learning"] and (time.monotonic() - m["play_start_mono"]) >= _SMART_LEARN_SECS:
+                                    m["learning"] = False
+                                    m["smart_threshold"] = max(
+                                        m["max_data_gap"] * _SMART_GAP_MULT,
                                         _SMART_MIN_SECS,
                                     )
                                     logger.debug(
-                                        "[%s] smart buffer: learned max_gap=%.1fs → threshold=%.1fs",
-                                        name, max_data_gap, smart_threshold,
+                                        "[%s] smart buffer: learned max_gap=%.1fs, threshold=%.1fs",
+                                        name, m["max_data_gap"], m["smart_threshold"],
                                     )
 
-                                # Only trigger when BOTH bytes AND playback
-                                # time have stalled (avoids false positives
-                                # when VLC still has plenty of buffer).
-                                data_stall_secs = read_stall_ticks * _POLL_INTERVAL
-                                if (data_stall_secs >= smart_threshold
-                                        and stall_ticks > 0):
+                                # Trigger only when BOTH bytes AND playback stalled.
+                                data_stall_secs = m["read_stall_ticks"] * _POLL_INTERVAL
+                                if (data_stall_secs >= m["smart_threshold"]
+                                        and m["stall_ticks"] > 0):
                                     logger.info(
                                         "[%s] smart buffer: network+playback stall "
                                         "(%.1fs no bytes, %.1fs no progress), reconnecting",
                                         name, data_stall_secs,
-                                        stall_ticks * _POLL_INTERVAL,
+                                        m["stall_ticks"] * _POLL_INTERVAL,
                                     )
                                     break_reason = _REASON_ENDED
                                     break
@@ -333,10 +301,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
                 # ── Buffering ─────────────────────────────────────────────
                 elif state == vlc.State.Buffering:
-                    terminal_ticks = 0
-                    if started:
-                        buffer_ticks += 1
-                        secs = buffer_ticks * _POLL_INTERVAL
+                    m["terminal_ticks"] = 0
+                    if m["started"]:
+                        m["buffer_ticks"] += 1
+                        secs = m["buffer_ticks"] * _POLL_INTERVAL
                         if secs >= _BUFFER_TOLERANCE:
                             logger.warning("[%s] buffering too long (%.0fs), reconnecting",
                                            name, _BUFFER_TOLERANCE)
@@ -345,37 +313,39 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             break
                         elif secs >= _BUFFER_WARN:
                             _safe(widget.show_status,
-                                  f"Buffering… {secs:.0f}s", "warn")
+                                  f"Buffering\u2026 {secs:.0f}s", "warn")
                         elif secs >= _BUFFER_SILENT:
-                            _safe(widget.show_status, "Buffering…", "info")
+                            _safe(widget.show_status, "Buffering\u2026", "info")
                         # else: brief hiccup — absorbed silently
                     else:
-                        _safe(widget.show_status, "Buffering…", "info")
+                        _safe(widget.show_status, "Buffering\u2026", "info")
 
                 # ── Ended (after playback had started) ────────────────────
-                elif state == vlc.State.Ended and started:
-                    terminal_ticks += 1
-                    if terminal_ticks * _POLL_INTERVAL >= _ENDED_CONFIRM:
-                        # Try quick play() first — avoids black screen.
-                        recovered = await _quick_play(widget, name)
-                        if recovered:
-                            terminal_ticks = 0
-                            stall_ticks = 0
-                            read_stall_ticks = 0
-                            continue
-                        # Quick play failed — seamless full reconnect.
-                        logger.info("[%s] stream ended — seamless reconnect", name)
-                        break_reason = _REASON_ENDED
-                        break
+                elif state == vlc.State.Ended and m["started"]:
+                    m["terminal_ticks"] += 1
+                    if m["terminal_ticks"] * _POLL_INTERVAL >= _ENDED_CONFIRM:
+                        # Seamless reconnect: create fresh media via
+                        # set_media() WITHOUT calling stop().  VLC keeps
+                        # the last video frame visible during transition.
+                        url, options = _build_options(widget, cfg)
+                        try:
+                            widget.play_url(url, options, seamless=True)
+                        except Exception:
+                            break_reason = _REASON_ENDED
+                            break
+                        logger.debug("[%s] seamless reconnect (no stop)", name)
+                        attempt = 0
+                        m = _reset_monitor_state()
+                        continue
 
                 # ── Ended (never started) or Error ────────────────────────
                 elif state in (vlc.State.Ended, vlc.State.Error):
-                    if started or grace_ticks > 50:
-                        terminal_ticks += 1
-                        if terminal_ticks * _POLL_INTERVAL >= 3.0:
+                    if m["started"] or m["grace_ticks"] > 50:
+                        m["terminal_ticks"] += 1
+                        if m["terminal_ticks"] * _POLL_INTERVAL >= 3.0:
                             kind = "ended" if state == vlc.State.Ended else "error"
                             logger.warning("[%s] stream %s (confirmed after %.1fs)",
-                                           name, kind, terminal_ticks * _POLL_INTERVAL)
+                                           name, kind, m["terminal_ticks"] * _POLL_INTERVAL)
                             lvl = "info" if state == vlc.State.Ended else "error"
                             msg = "Stream ended" if state == vlc.State.Ended \
                                 else "Stream error"
@@ -384,12 +354,12 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             break
 
                 else:
-                    terminal_ticks = 0
+                    m["terminal_ticks"] = 0
 
                 # Connection timeout (never reached Playing state).
-                if not started:
-                    connect_ticks += 1
-                    elapsed = connect_ticks * _POLL_INTERVAL
+                if not m["started"]:
+                    m["connect_ticks"] += 1
+                    elapsed = m["connect_ticks"] * _POLL_INTERVAL
                     if elapsed >= _CONNECT_TIMEOUT:
                         logger.warning("[%s] connection timeout (%.0fs), retrying",
                                        name, _CONNECT_TIMEOUT)
@@ -398,9 +368,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         break
                     elif elapsed >= 5:
                         _safe(widget.show_status,
-                              f"Connecting… {elapsed:.0f}s", "info")
+                              f"Connecting\u2026 {elapsed:.0f}s", "info")
 
-                grace_ticks += 1
+                m["grace_ticks"] += 1
                 await asyncio.sleep(_POLL_INTERVAL)
 
             # ── Post-loop: decide how to reconnect ────────────────────────
@@ -411,15 +381,12 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 continue
 
             if break_reason == _REASON_ENDED:
-                # Seamless reconnect: stream ended cleanly (server closed
-                # the HTTP connection / TS stream finished).  Create a
-                # fresh media object immediately — no status shown.
-                seamless = True
+                # Seamless path broke out due to play_url failure.
                 attempt = 0
                 continue
 
             # Error / stall / timeout — normal reconnect with status.
-            if started:
+            if m["started"]:
                 attempt = 0
 
     except asyncio.CancelledError:
