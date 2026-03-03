@@ -50,7 +50,8 @@ _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
 # Seconds to confirm Ended state before recovery/reconnect.
-_ENDED_CONFIRM = 1.0
+# Short — with http-reconnect VLC rarely reaches Ended; this is a fast fallback.
+_ENDED_CONFIRM = 0.4
 # Smart buffer: minimum stall threshold (seconds).
 _SMART_MIN_SECS = 8.0
 # Smart buffer: how many seconds of playback to observe for auto-tuning.
@@ -81,6 +82,8 @@ def _media_options(cfg: Config) -> list[str]:
         f":live-caching={cfg.vlc_live_cache}",
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
+        ":http-reconnect=true",     # reconnect at HTTP level (no Ended state)
+        ":http-continuous=true",    # keep reading past EOF on live streams
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
