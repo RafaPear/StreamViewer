@@ -70,6 +70,7 @@ class StreamWidget(QWidget):
         self._restart_requested = False
         self._released = False
         self._is_detached = False
+        self._upscale_active = False
 
         # VLC
         self._vlc_instance = vlc_instance
@@ -330,19 +331,11 @@ class StreamWidget(QWidget):
     # ── Runtime upscale / enhance ────────────────────────────────────────────
 
     def set_upscale(self, enabled: bool) -> None:
-        """Toggle VLC video adjust filter for visual enhancement in fullscreen."""
-        if self._released:
+        """Enable or disable SW-decode upscaling (triggers a stream restart)."""
+        if self._upscale_active == enabled:
             return
-        try:
-            if enabled:
-                self._player.video_set_adjust_int(vlc.VideoAdjustOption.Enable, 1)
-                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Contrast, 1.05)
-                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Gamma, 0.95)
-                self._player.video_set_adjust_float(vlc.VideoAdjustOption.Saturation, 1.05)
-            else:
-                self._player.video_set_adjust_int(vlc.VideoAdjustOption.Enable, 0)
-        except Exception:
-            pass
+        self._upscale_active = enabled
+        self._restart_requested = True
 
     # ── Status display ───────────────────────────────────────────────────────
 

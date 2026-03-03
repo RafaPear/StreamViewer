@@ -23,8 +23,8 @@ class Config:
     active_border: int = 4
 
     # ── VLC playback ─────────────────────────────────────────────────────────
-    vlc_network_cache: int = 2000   # ms – buffer for network streams
-    vlc_live_cache: int = 1000      # ms – buffer for live streams
+    vlc_network_cache: int = 5000   # ms – buffer for network streams
+    vlc_live_cache: int = 3000      # ms – buffer for live streams
 
     # ── Audio ─────────────────────────────────────────────────────────────────
     audio_enabled: bool = True

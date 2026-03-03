@@ -56,11 +56,17 @@ def _media_options(cfg: Config) -> list[str]:
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
-    if cfg.upscale_enabled:
-        opts.append(":swscale-mode=9")           # Lanczos interpolation
-        opts.append(":video-filter=sharpen")      # sharpening filter
-        opts.append(":sharpen-sigma=0.04")        # subtle sharpening
     return opts
+
+
+def _upscale_options() -> list[str]:
+    """Extra per-media VLC options for SW-decode upscaling (fullscreen only)."""
+    return [
+        ":avcodec-hw=none",             # force software decoding so filters work
+        ":swscale-mode=9",              # Lanczos interpolation
+        ":video-filter=sharpen",        # sharpening filter
+        ":sharpen-sigma=0.06",          # noticeable but not harsh
+    ]
 
 
 def _safe(fn, *args, default=None):
@@ -96,9 +102,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 return
 
             if attempt == 1:
-                _safe(widget.show_status, "Connecting...", "info")
+                _safe(widget.show_status, "Connecting…", "info")
             else:
-                _safe(widget.show_status, f"Reconnecting (attempt {attempt})...", "warn")
+                _safe(widget.show_status, f"Reconnecting…", "warn")
 
             # Brief pause before (re)starting – gives VLC time to clean up
             # the previous player state and prevents rapid stop→play segfaults.
@@ -108,6 +114,8 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             await asyncio.sleep(0.5 + jitter)
 
             options = _media_options(cfg)
+            if getattr(widget, '_upscale_active', False):
+                options.extend(_upscale_options())
             url = widget._quality_url or widget.channel.url
             if widget._quality_url:
                 options = [o for o in options if not o.startswith(":adaptive-")]
@@ -189,11 +197,13 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                                            name, _BUFFER_TOLERANCE)
                             _safe(widget.show_status, "Connection lost", "error")
                             break
-                        elif buffer_ticks > 5:
+                        elif buffer_ticks > 2:
                             _safe(widget.show_status,
-                                  f"Buffering... ({secs:.0f}s)", "warn")
+                                  f"Buffering… {secs:.0f}s", "warn")
+                        else:
+                            _safe(widget.show_status, "Buffering…", "info")
                     else:
-                        _safe(widget.show_status, "Buffering...", "info")
+                        _safe(widget.show_status, "Buffering…", "info")
 
                 elif state == vlc.State.Ended and started:
                     # HLS live streams can briefly report Ended between
@@ -236,9 +246,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                                        name, _CONNECT_TIMEOUT)
                         _safe(widget.show_status, "Connection timed out", "error")
                         break
-                    elif elapsed >= 10:
+                    elif elapsed >= 5:
                         _safe(widget.show_status,
-                              f"Connecting... ({elapsed:.0f}s)", "info")
+                              f"Connecting… {elapsed:.0f}s", "info")
 
                 grace_ticks += 1
                 await asyncio.sleep(_POLL_INTERVAL)
