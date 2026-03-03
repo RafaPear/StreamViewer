@@ -30,6 +30,15 @@ jobs:
           python -m PyInstaller StreamsClient.spec \
             --noconfirm --clean --distpath dist --workpath build
 
+      - name: Add qt.conf to bundle
+        run: |
+          RESOURCES="dist/StreamsClient.app/Contents/Resources"
+          mkdir -p "$RESOURCES"
+          cat > "$RESOURCES/qt.conf" << 'EOF'
+          [Paths]
+          Plugins = MacOS/PyQt6/Qt6/plugins
+          EOF
+
       - name: Package
         run: cd dist && zip -r StreamsClient-macOS.zip StreamsClient.app
 

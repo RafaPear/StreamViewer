@@ -39,14 +39,42 @@ If you are running from source (not the built app), you also need
 
 ## Installation
 
-### Ready-made app (easiest)
+### Quick install (recommended)
 
-If someone gave you a built copy of the app:
+Clone the repository and run the installer — it checks everything for you:
 
-- **macOS** — double-click `StreamsClient.app` (or drag it into your
-  Applications folder first). If macOS blocks it, right-click > Open.
-- **Windows** — double-click `StreamsClient.exe` inside the
-  `dist\StreamsClient` folder.
+**macOS / Linux:**
+```bash
+git clone https://github.com/RafaPear/StreamViewer.git
+cd StreamViewer
+./install.sh
+```
+
+**Windows:**
+```
+git clone https://github.com/RafaPear/StreamViewer.git
+cd StreamViewer
+install.bat
+```
+
+The installer will:
+- ✓ Check that Python 3.10+ is installed (tells you how to get it if not)
+- ✓ Check that VLC is installed (tells you how to get it if not)
+- ✓ Create a virtual environment and install all dependencies
+- ✓ Create a clickable launcher (`StreamsClient.command` on macOS, `StreamsClient.bat` on Windows)
+
+### Ready-made app (download)
+
+Pre-built apps are available on the
+[Releases page](https://github.com/RafaPear/StreamViewer/releases).
+Download the `.zip` for your platform:
+
+- **macOS** — unzip, drag `StreamsClient.app` to Applications.
+  If macOS blocks it, right-click > Open.
+- **Windows** — unzip, double-click `StreamsClient.exe`.
+  If SmartScreen warns, click "More info" > "Run anyway".
+
+> **Note:** VLC must still be installed separately.
 
 ### Run from source
 
