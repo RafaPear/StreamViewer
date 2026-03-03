@@ -51,6 +51,10 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
+    # Silence noisy third-party loggers.
+    for noisy in ("qasync", "asyncio"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     fh = RotatingFileHandler(
         log_dir / "streams.log",
         maxBytes=5 * 1024 * 1024,   # 5 MB per file
