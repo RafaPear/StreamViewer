@@ -12,6 +12,9 @@ Design
 * Mid-stream buffering tolerance avoids killing streams during brief
   network hiccups.
 * Stall detection catches frozen streams (Playing state but no progress).
+* Seamless reconnect: when a stream ends cleanly (e.g. IPTV server
+  closes the HTTP connection), we immediately create a fresh media
+  object and reconnect without showing any status to the user.
 """
 
 import asyncio
@@ -40,14 +43,17 @@ _STALL_TIMEOUT = 30.0
 _POLL_INTERVAL = 0.2
 # How long to wait after an embed (reparent) before monitoring state.
 _EMBED_GRACE = 3.0
-# Quick-restart: max attempts to call play() on Ended before full reconnect.
-_QUICK_RESTART_MAX = 3
-# Quick-restart: seconds to wait for Playing state after play().
-_QUICK_RESTART_WAIT = 3.0
 # Buffering shorter than this (seconds) is absorbed silently.
 _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
+# Seconds to confirm Ended state before acting (filters transient flickers).
+_ENDED_CONFIRM = 0.6
+
+# Break-reason flags (why the inner monitoring loop exited).
+_REASON_RESTART = "restart"      # user / settings triggered restart
+_REASON_ENDED = "ended"          # stream ended cleanly (seamless reconnect)
+_REASON_ERROR = "error"          # stream error / timeout / stall
 
 
 def _media_options(cfg: Config) -> list[str]:
@@ -59,8 +65,6 @@ def _media_options(cfg: Config) -> list[str]:
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
         ":clock-jitter=5000",       # tolerate 5s clock drift before resync
-        ":http-reconnect",          # auto-reconnect dropped HTTP connections
-        ":http-continuous",         # keep-alive / persistent HTTP connections
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
@@ -106,6 +110,18 @@ def _safe(fn, *args, default=None):
         return default
 
 
+def _build_options(widget, cfg: Config) -> tuple[str, list[str]]:
+    """Return (url, options) for the stream, including upscale if active."""
+    options = _media_options(cfg)
+    upscale_preset = getattr(widget, '_upscale_preset', 'off')
+    if upscale_preset != 'off':
+        options.extend(_upscale_options(upscale_preset))
+    url = widget._quality_url or widget.channel.url
+    if widget._quality_url:
+        options = [o for o in options if not o.startswith(":adaptive-")]
+    return url, options
+
+
 async def capture_loop(widget, loop, cfg: Config) -> None:
     """
     Per-stream async loop: start VLC playback, monitor state, retry on failure.
@@ -116,6 +132,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
     attempt = 0
     max_retries = cfg.max_retries  # 0 = unlimited
     name = widget.channel.display_name()
+    seamless = False  # True when reconnecting after a clean Ended
 
     try:
         while True:
@@ -130,25 +147,26 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 logger.error("[%s] max retries (%d) reached", name, max_retries)
                 return
 
-            if attempt == 1:
+            # ── Status message ────────────────────────────────────────────
+            if seamless:
+                pass  # silent reconnect — no visible indicator
+            elif attempt == 1:
                 _safe(widget.show_status, "Connecting…", "info")
             else:
-                _safe(widget.show_status, f"Reconnecting…", "warn")
+                _safe(widget.show_status, "Reconnecting…", "warn")
 
-            # Brief pause before (re)starting – gives VLC time to clean up
-            # the previous player state and prevents rapid stop→play segfaults.
-            # Stagger across streams to avoid simultaneous VLC calls.
+            # ── Pre-start delay ───────────────────────────────────────────
             _safe(widget.stop)
-            jitter = widget.index * 0.3
-            await asyncio.sleep(0.5 + jitter)
+            if seamless:
+                # Minimal delay for seamless reconnect (Ended → fresh media).
+                await asyncio.sleep(0.15)
+            else:
+                jitter = widget.index * 0.3
+                await asyncio.sleep(0.5 + jitter)
+            seamless = False
 
-            options = _media_options(cfg)
-            upscale_preset = getattr(widget, '_upscale_preset', 'off')
-            if upscale_preset != 'off':
-                options.extend(_upscale_options(upscale_preset))
-            url = widget._quality_url or widget.channel.url
-            if widget._quality_url:
-                options = [o for o in options if not o.startswith(":adaptive-")]
+            # ── Start playback ────────────────────────────────────────────
+            url, options = _build_options(widget, cfg)
             try:
                 widget.play_url(url, options)
             except Exception as exc:
@@ -167,13 +185,16 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             stall_ticks = 0
             last_time = -1
             terminal_ticks = 0
+            break_reason = _REASON_ERROR
 
+            # ── Inner monitoring loop ─────────────────────────────────────
             while True:
                 if widget._released:
                     return
 
                 if widget._restart_requested:
                     logger.debug("[%s] restart requested", name)
+                    break_reason = _REASON_RESTART
                     break
 
                 # Toggle audio when active state changes.
@@ -191,6 +212,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 if state is None:
                     state = vlc.State.Error
 
+                # ── Playing ───────────────────────────────────────────────
                 if state == vlc.State.Playing:
                     if not started:
                         started = True
@@ -215,8 +237,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         logger.warning("[%s] stall detected (no progress for %.0fs)",
                                        name, _STALL_TIMEOUT)
                         _safe(widget.show_status, "Stream stalled", "warn")
+                        break_reason = _REASON_ERROR
                         break
 
+                # ── Buffering ─────────────────────────────────────────────
                 elif state == vlc.State.Buffering:
                     terminal_ticks = 0
                     if started:
@@ -226,6 +250,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             logger.warning("[%s] buffering too long (%.0fs), reconnecting",
                                            name, _BUFFER_TOLERANCE)
                             _safe(widget.show_status, "Connection lost", "error")
+                            break_reason = _REASON_ERROR
                             break
                         elif secs >= _BUFFER_WARN:
                             _safe(widget.show_status,
@@ -236,22 +261,15 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     else:
                         _safe(widget.show_status, "Buffering…", "info")
 
+                # ── Ended (after playback had started) ────────────────────
                 elif state == vlc.State.Ended and started:
-                    # HLS live streams can briefly report Ended between
-                    # playlist refreshes.  Try a quick stop→play before
-                    # doing a full reconnect.
                     terminal_ticks += 1
-                    if terminal_ticks * _POLL_INTERVAL >= 1.0:
-                        logger.info("[%s] stream ended — attempting quick restart", name)
-                        recovered = await _quick_restart(widget, name)
-                        if recovered:
-                            terminal_ticks = 0
-                            stall_ticks = 0
-                            # Continue monitoring — stream is back.
-                        else:
-                            _safe(widget.show_status, "Stream ended", "info")
-                            break
+                    if terminal_ticks * _POLL_INTERVAL >= _ENDED_CONFIRM:
+                        logger.info("[%s] stream ended — seamless reconnect", name)
+                        break_reason = _REASON_ENDED
+                        break
 
+                # ── Ended (never started) or Error ────────────────────────
                 elif state in (vlc.State.Ended, vlc.State.Error):
                     if started or grace_ticks > 50:
                         terminal_ticks += 1
@@ -263,6 +281,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             msg = "Stream ended" if state == vlc.State.Ended \
                                 else "Stream error"
                             _safe(widget.show_status, msg, lvl)
+                            break_reason = _REASON_ERROR
                             break
 
                 else:
@@ -276,6 +295,7 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         logger.warning("[%s] connection timeout (%.0fs), retrying",
                                        name, _CONNECT_TIMEOUT)
                         _safe(widget.show_status, "Connection timed out", "error")
+                        break_reason = _REASON_ERROR
                         break
                     elif elapsed >= 5:
                         _safe(widget.show_status,
@@ -284,15 +304,22 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 grace_ticks += 1
                 await asyncio.sleep(_POLL_INTERVAL)
 
-            # ── Immediate reconnect (no countdown) ───────────────────────────
+            # ── Post-loop: decide how to reconnect ────────────────────────
             _safe(widget.stop)
 
-            if widget._restart_requested:
+            if break_reason == _REASON_RESTART:
                 attempt = 0
                 continue
 
-            # If the stream was playing before it dropped, reset the attempt
-            # counter so the next reconnect is treated as fresh.
+            if break_reason == _REASON_ENDED:
+                # Seamless reconnect: stream ended cleanly (server closed
+                # the HTTP connection / TS stream finished).  Create a
+                # fresh media object immediately — no status shown.
+                seamless = True
+                attempt = 0
+                continue
+
+            # Error / stall / timeout — normal reconnect with status.
             if started:
                 attempt = 0
 
@@ -301,27 +328,3 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             widget.stop()
         except Exception:
             pass
-
-
-async def _quick_restart(widget, name: str) -> bool:
-    """Try stop→play on the existing media.  Returns True if Playing resumes."""
-    for i in range(_QUICK_RESTART_MAX):
-        if widget._released or widget._restart_requested:
-            return False
-        logger.debug("[%s] quick restart attempt %d", name, i + 1)
-        _safe(widget.stop)
-        await asyncio.sleep(0.3)
-        try:
-            widget._player.play()
-        except Exception:
-            return False
-        # Wait for Playing state.
-        for _ in range(int(_QUICK_RESTART_WAIT / _POLL_INTERVAL)):
-            await asyncio.sleep(_POLL_INTERVAL)
-            if widget._released or widget._restart_requested:
-                return False
-            s = _safe(widget.get_state, default=vlc.State.Error)
-            if s == vlc.State.Playing:
-                logger.info("[%s] quick restart succeeded", name)
-                return True
-    return False
