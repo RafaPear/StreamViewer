@@ -86,7 +86,11 @@ def parse_master_playlist(master_url: str) -> list[StreamVariant]:
         headers={"User-Agent": "Mozilla/5.0 (compatible; StreamsClient/1.0)"},
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        text = resp.read().decode("utf-8", errors="replace")
+        ctype = resp.headers.get("Content-Type", "")
+        # Plain TS streams will never contain an HLS master playlist.
+        if "video/" in ctype or "application/octet-stream" in ctype:
+            return []
+        text = resp.read(64 * 1024).decode("utf-8", errors="replace")
     if "#EXT-X-STREAM-INF" not in text:
         return []
     base = master_url.rsplit("/", 1)[0] + "/"
