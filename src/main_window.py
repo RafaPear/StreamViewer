@@ -806,13 +806,15 @@ class MainWindow(QMainWindow):
         save_config(self._cfg)
 
     def _action_check_update(self) -> None:
+        asyncio.ensure_future(self._check_update_async())
+
+    async def _check_update_async(self) -> None:
         from updater import check_for_update, download_and_apply
         from version import __version__
 
-        self.statusBar().showMessage("Checking for updates...", 5000)
-        QApplication.processEvents()
+        self.statusBar().showMessage("Checking for updates…", 5000)
 
-        info = check_for_update()
+        info = await asyncio.to_thread(check_for_update)
         if info is None:
             QMessageBox.information(
                 self, "Up to Date",
@@ -830,15 +832,12 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self.statusBar().showMessage("Downloading update...", 0)
-        QApplication.processEvents()
+        self.statusBar().showMessage("Downloading update…", 0)
 
-        def _progress(downloaded, total):
-            pct = int(downloaded / total * 100)
-            self.statusBar().showMessage(f"Downloading update... {pct}%", 0)
-            QApplication.processEvents()
+        def _download_blocking():
+            return download_and_apply(info["url"], on_progress=None)
 
-        ok = download_and_apply(info["url"], on_progress=_progress)
+        ok = await asyncio.to_thread(_download_blocking)
         if ok:
             QMessageBox.information(
                 self, "Update Ready",

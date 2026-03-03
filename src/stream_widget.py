@@ -478,14 +478,6 @@ class StreamWidget(QWidget):
             self._btn_quality.rect().bottomLeft()
         ))
 
-    def _fetch_variants(self) -> None:
-        self._variants_fetched = True
-        try:
-            from models import parse_master_playlist
-            self._variants = parse_master_playlist(self.channel.url)
-        except Exception:
-            self._variants = []
-
     def _set_quality(self, url: str | None) -> None:
         if url == self._quality_url:
             return
