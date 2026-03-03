@@ -20,6 +20,7 @@ Design
 
 import asyncio
 import logging
+import random
 import time
 
 import vlc
@@ -37,9 +38,9 @@ _UA = (
 # Seconds to wait in Opening/Buffering before declaring a connection timeout.
 _CONNECT_TIMEOUT = 45.0
 # Seconds of buffering mid-stream before we consider the connection lost.
-_BUFFER_TOLERANCE = 60.0
+_BUFFER_TOLERANCE = 30.0
 # Seconds of "Playing" with no time progress before declaring a stall.
-_STALL_TIMEOUT = 30.0
+_STALL_TIMEOUT = 15.0
 # Poll interval in seconds.
 _POLL_INTERVAL = 0.2
 # How long to wait after an embed (reparent) before monitoring state.
@@ -48,14 +49,25 @@ _EMBED_GRACE = 3.0
 _BUFFER_SILENT = 1.5
 # Buffering longer than this shows elapsed seconds.
 _BUFFER_WARN = 5.0
-# Seconds to confirm Ended state before seamless reconnect.
-_ENDED_CONFIRM = 0.4
+# Seconds to confirm Ended state before recovery/reconnect.
+# Long enough for VLC's http-reconnect to handle segment boundaries.
+_ENDED_CONFIRM = 8.0
 # Smart buffer: minimum stall threshold (seconds).
 _SMART_MIN_SECS = 8.0
 # Smart buffer: how many seconds of playback to observe for auto-tuning.
 _SMART_LEARN_SECS = 30.0
 # Smart buffer: multiplier applied to observed max data gap.
 _SMART_GAP_MULT = 2.5
+# Seconds of stable playback before clearing reconnect backoff.
+_STABLE_PLAY_RESET = 20.0
+# Retry delay jitter (+/- percentage).
+_RETRY_JITTER = 0.2
+# Smart buffer: minimum playback stall to pair with data stall.
+_SMART_PLAY_STALL_MIN = 2.0
+# Cooldown between smart-buffer-triggered reconnects.
+_SMART_RECONNECT_COOLDOWN = 20.0
+# Ignore restart requests during first playback warmup seconds.
+_RESTART_WARMUP = 8.0
 
 # Break-reason flags (why the inner monitoring loop exited).
 _REASON_RESTART = "restart"      # user / settings triggered restart
@@ -68,10 +80,10 @@ def _media_options(cfg: Config) -> list[str]:
     opts = [
         f":network-caching={cfg.vlc_network_cache}",
         f":live-caching={cfg.vlc_live_cache}",
-        f":file-caching={cfg.vlc_network_cache}",
         f":http-user-agent={_UA}",
         ":adaptive-logic=highest",
-        ":clock-jitter=5000",       # tolerate 5s clock drift before resync
+        ":http-reconnect=true",
+        ":http-continuous=true",
     ]
     if cfg.cenc_decryption_key:
         opts.append(f":ts-csa-ck={cfg.cenc_decryption_key}")
@@ -156,6 +168,8 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
     works unchanged.
     """
     attempt = 0
+    failure_streak = 0
+    last_smart_reconnect_mono = 0.0
     max_retries = cfg.max_retries  # 0 = unlimited
     name = widget.channel.display_name()
 
@@ -181,7 +195,19 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             # ── Pre-start delay ───────────────────────────────────────────
             _safe(widget.stop)
             jitter = widget.index * 0.3
-            await asyncio.sleep(0.5 + jitter)
+            prestart_delay = 0.5 + jitter
+            if failure_streak > 0:
+                base = max(0.5, float(cfg.retry_delay))
+                cap = max(base, float(cfg.max_retry_delay))
+                backoff = min(cap, base * (2 ** (failure_streak - 1)))
+                backoff *= random.uniform(1.0 - _RETRY_JITTER, 1.0 + _RETRY_JITTER)
+                prestart_delay += backoff
+                _safe(widget.show_status, f"Reconnecting in {backoff:.1f}s…", "warn")
+                logger.info(
+                    "[%s] reconnect backoff %.1fs (streak=%d)",
+                    name, backoff, failure_streak,
+                )
+            await asyncio.sleep(prestart_delay)
 
             # ── Start playback ────────────────────────────────────────────
             url, options = _build_options(widget, cfg)
@@ -206,6 +232,16 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     return
 
                 if widget._restart_requested:
+                    force_restart = bool(getattr(widget, "_restart_force", False))
+                    if (not force_restart and
+                            (not m["started"]
+                             or (time.monotonic() - m["play_start_mono"]) < _RESTART_WARMUP)):
+                        widget._restart_requested = False
+                        logger.debug("[%s] restart ignored during warmup", name)
+                        await asyncio.sleep(_POLL_INTERVAL)
+                        continue
+                    widget._restart_requested = False
+                    widget._restart_force = False
                     logger.debug("[%s] restart requested", name)
                     break_reason = _REASON_RESTART
                     break
@@ -233,9 +269,13 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         _safe(widget.hide_status)
                         _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
                         QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
-                        _safe(widget.prefetch_variants)
                         attempt = 0
                         logger.info("[%s] playback started", name)
+                    elif (failure_streak > 0
+                          and (time.monotonic() - m["play_start_mono"]) >= _STABLE_PLAY_RESET):
+                        logger.info("[%s] stable playback %.0fs, clearing reconnect backoff",
+                                    name, _STABLE_PLAY_RESET)
+                        failure_streak = 0
 
                     m["buffer_ticks"] = 0
                     m["terminal_ticks"] = 0
@@ -247,7 +287,8 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         m["stall_ticks"] = 0
                     m["last_time"] = cur_time if cur_time is not None else m["last_time"]
 
-                    if m["stall_ticks"] * _POLL_INTERVAL >= _STALL_TIMEOUT:
+                    if (_STALL_TIMEOUT > 0
+                            and m["stall_ticks"] * _POLL_INTERVAL >= _STALL_TIMEOUT):
                         logger.warning("[%s] stall detected (no progress for %.0fs)",
                                        name, _STALL_TIMEOUT)
                         _safe(widget.show_status, "Stream stalled", "warn")
@@ -286,16 +327,23 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
                                 # Trigger only when BOTH bytes AND playback stalled.
                                 data_stall_secs = m["read_stall_ticks"] * _POLL_INTERVAL
-                                if (data_stall_secs >= m["smart_threshold"]
-                                        and m["stall_ticks"] > 0):
+                                playback_stall_secs = m["stall_ticks"] * _POLL_INTERVAL
+                                smart_cooldown_ok = (
+                                    (time.monotonic() - last_smart_reconnect_mono)
+                                    >= _SMART_RECONNECT_COOLDOWN
+                                )
+                                if (not m["learning"]
+                                        and data_stall_secs >= m["smart_threshold"]
+                                        and playback_stall_secs >= _SMART_PLAY_STALL_MIN
+                                        and smart_cooldown_ok):
                                     logger.info(
                                         "[%s] smart buffer: network+playback stall "
-                                        "(%.1fs no bytes, %.1fs no progress), reconnecting",
+                                        "(%.1fs no bytes, %.1fs no progress), warning only",
                                         name, data_stall_secs,
-                                        m["stall_ticks"] * _POLL_INTERVAL,
+                                        playback_stall_secs,
                                     )
-                                    break_reason = _REASON_ENDED
-                                    break
+                                    _safe(widget.show_status, "Network unstable…", "warn")
+                                    last_smart_reconnect_mono = time.monotonic()
                         except Exception:
                             pass
 
@@ -324,22 +372,20 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 elif state == vlc.State.Ended and m["started"]:
                     m["terminal_ticks"] += 1
                     if m["terminal_ticks"] * _POLL_INTERVAL >= _ENDED_CONFIRM:
-                        # Seamless reconnect: create fresh media via
-                        # set_media() WITHOUT calling stop().  VLC keeps
-                        # the last video frame visible during transition.
+                        # VLC's http-reconnect didn't recover within the
+                        # confirmation window.  Try a seamless media swap
+                        # (keeps last frame visible), else fall back to
+                        # a full stop+restart.
                         url, options = _build_options(widget, cfg)
                         try:
                             widget.play_url(url, options, seamless=True)
                         except Exception:
                             break_reason = _REASON_ENDED
                             break
-                        # Give VLC a moment to transition out of Ended.
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(0.5)
                         new_state = _safe(widget.get_state, default=vlc.State.Error)
                         if new_state in (vlc.State.Opening, vlc.State.Buffering,
                                          vlc.State.Playing):
-                            # Seamless reconnect is working — keep started=True
-                            # so no status messages are shown to the user.
                             logger.debug("[%s] seamless reconnect (no stop)", name)
                             attempt = 0
                             m["terminal_ticks"] = 0
@@ -348,10 +394,8 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                             m["last_time"] = -1
                             m["last_read_bytes"] = -1
                             m["read_stall_ticks"] = 0
-                            # Keep started=True, keep learning state.
                             continue
                         else:
-                            # set_media+play didn't work, full reconnect.
                             logger.debug("[%s] seamless failed (state=%s), full reconnect",
                                          name, new_state)
                             break_reason = _REASON_ENDED
@@ -394,19 +438,24 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
 
             # ── Post-loop: decide how to reconnect ────────────────────────
             _safe(widget.stop)
+            logger.info("[%s] reconnect reason=%s (started=%s, streak=%d)",
+                        name, break_reason, m["started"], failure_streak)
 
             if break_reason == _REASON_RESTART:
                 attempt = 0
+                failure_streak = 0
                 continue
 
             if break_reason == _REASON_ENDED:
                 # Seamless path broke out due to play_url failure.
                 attempt = 0
+                failure_streak = 0
                 continue
 
             # Error / stall / timeout — normal reconnect with status.
             if m["started"]:
                 attempt = 0
+            failure_streak += 1
 
     except asyncio.CancelledError:
         try:

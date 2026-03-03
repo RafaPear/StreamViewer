@@ -68,6 +68,9 @@ class StreamWidget(QWidget):
         self._border_visible = True
         self._controls_pinned = True  # always visible in grid mode
         self._restart_requested = False
+        self._restart_force = False
+        self._last_restart_request_time: float = 0.0
+        self._paused_for_single_view = False
         self._released = False
         self._is_detached = False
         self._upscale_preset: str = "off"
@@ -351,7 +354,7 @@ class StreamWidget(QWidget):
             self.show_status(f"Enabling upscaler ({label})…", "info")
         else:
             self.show_status("Disabling upscaler…", "info")
-        self._restart_requested = True
+        self.request_restart(force=True)
 
     # ── Status display ───────────────────────────────────────────────────────
 
@@ -479,7 +482,7 @@ class StreamWidget(QWidget):
         if url == self._quality_url:
             return
         self._quality_url = url
-        self._restart_requested = True
+        self.request_restart(force=True)
         if url:
             label = next(
                 (v.label for v in self._variants if v.url == url), "?"
@@ -496,7 +499,15 @@ class StreamWidget(QWidget):
         if self._cfg.audio_enabled:
             self.set_audio_active(active)
 
-    def request_restart(self) -> None:
+    def request_restart(self, force: bool = False) -> None:
+        if not force:
+            now = time.monotonic()
+            if now - self._last_restart_request_time < 90.0:
+                return
+            self._last_restart_request_time = now
+        else:
+            self._last_restart_request_time = time.monotonic()
+            self._restart_force = True
         self._restart_requested = True
 
     def set_border_visible(self, visible: bool) -> None:

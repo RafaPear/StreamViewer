@@ -379,6 +379,16 @@ class SettingsDialog(QDialog):
         self._audio_enabled.setChecked(self._cfg.audio_enabled)
         form.addRow(self._audio_enabled)
 
+        self._single_disconnect = QCheckBox(
+            "In single-stream view, disconnect other streams"
+        )
+        self._single_disconnect.setChecked(self._cfg.single_mode_disconnect_others)
+        self._single_disconnect.setToolTip(
+            "Reduces bandwidth/CPU in single view by pausing non-visible streams.\n"
+            "Other streams reconnect automatically when returning to grid."
+        )
+        form.addRow(self._single_disconnect)
+
         form.addRow(QLabel(""))   # spacer
 
         # ── VLC buffering ─────────────────────────────────────────────────────
@@ -399,18 +409,18 @@ class SettingsDialog(QDialog):
         self._live_cache.setSuffix(" ms")
         gf.addRow("Live stream buffer:", self._live_cache)
 
-        self._smart_buffer = QCheckBox("Smart buffer management (recommended)")
+        self._smart_buffer = QCheckBox("Smart buffer diagnostics (optional)")
         self._smart_buffer.setChecked(self._cfg.smart_buffer)
         self._smart_buffer.setToolTip(
-            "Detects network stalls early and reconnects proactively\n"
-            "while the buffer still has data, avoiding visible drops."
+            "Detects network stalls and shows warnings.\n"
+            "Does not force proactive reconnects."
         )
         gf.addRow(self._smart_buffer)
 
         buf_note = QLabel(
             "Higher values improve stability but add latency.\n"
-            "Smart buffer adds a few seconds of latency but prevents\n"
-            "most visible drops by reconnecting before the buffer runs out."
+            "Smart buffer only reports instability so you can tune\n"
+            "buffers without extra reconnect churn."
         )
         buf_note.setWordWrap(True)
         buf_note.setStyleSheet("color: gray; font-size: 11px;")
@@ -487,6 +497,7 @@ class SettingsDialog(QDialog):
         self._cfg.grid_cols = self._grid_cols.value()
         self._cfg.active_border = self._border.value()
         self._cfg.audio_enabled = self._audio_enabled.isChecked()
+        self._cfg.single_mode_disconnect_others = self._single_disconnect.isChecked()
         self._cfg.vlc_network_cache = self._net_cache.value()
         self._cfg.vlc_live_cache = self._live_cache.value()
         self._cfg.smart_buffer = self._smart_buffer.isChecked()

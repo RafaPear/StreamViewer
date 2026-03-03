@@ -528,6 +528,7 @@ class MainWindow(QMainWindow):
         self._loop = loop
         for w in self._widgets:
             self._tasks[w] = asyncio.ensure_future(capture_loop(w, loop, self._cfg))
+        self._apply_single_view_connection_policy()
 
     # ── Runtime stream management ─────────────────────────────────────────────
 
@@ -561,6 +562,7 @@ class MainWindow(QMainWindow):
             self._set_active(start_index)
         else:
             self._switch_stream(start_index)
+        self._apply_single_view_connection_policy()
         if n > 1:
             self.statusBar().showMessage(f"Loaded {n} streams", 3000)
 
@@ -627,6 +629,7 @@ class MainWindow(QMainWindow):
             self._cursor_timer.stop()
             self._show_overlay()
             self.statusBar().show()
+        self._apply_single_view_connection_policy()
         self.setFocus()  # re-grab keyboard focus after grid rebuild
 
     def _clear_all_streams(self) -> None:
@@ -779,7 +782,6 @@ class MainWindow(QMainWindow):
             or old["vlc_live_cache"] != self._cfg.vlc_live_cache
             or old["cenc_decryption_key"] != self._cfg.cenc_decryption_key
             or old["upscale_preset"] != self._cfg.upscale_preset
-            or old["smart_buffer"] != self._cfg.smart_buffer
         )
 
         for w in self._widgets:
@@ -792,12 +794,14 @@ class MainWindow(QMainWindow):
                 w.set_audio_active(w._active and self._cfg.audio_enabled)
 
         if vlc_changed:
-            for w in self._widgets:
-                w.request_restart()
+            self.statusBar().showMessage(
+                "Playback settings saved (applies on next reconnect)", 4000
+            )
 
         if self._grid_mode:
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
+        self._apply_single_view_connection_policy()
 
         save_config(self._cfg)
 
@@ -1088,6 +1092,24 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self._widgets):
             self._widgets[index].set_active(True)
 
+    def _apply_single_view_connection_policy(self) -> None:
+        if not self._widgets:
+            return
+        disconnect_others = (
+            not self._grid_mode and self._cfg.single_mode_disconnect_others
+        )
+        for i, w in enumerate(self._widgets):
+            if w._is_detached:
+                continue
+            if disconnect_others and i != self._active_index:
+                if not w._paused_for_single_view:
+                    w.stop()
+                    w._paused_for_single_view = True
+                continue
+            if w._paused_for_single_view:
+                w._paused_for_single_view = False
+                w.request_restart(force=True)
+
     def _switch_stream(self, index: int) -> None:
         self._set_active(index)
         if self._grid_mode:
@@ -1098,6 +1120,7 @@ class MainWindow(QMainWindow):
                 self._rebuild_grid()
         else:
             self._show_single(index)
+        self._apply_single_view_connection_policy()
 
     def _show_single(self, index: int) -> None:
         self._rebuild_grid()
@@ -1131,3 +1154,4 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
         else:
             self._show_single(self._active_index)
+        self._apply_single_view_connection_policy()

@@ -23,14 +23,15 @@ class Config:
     active_border: int = 4
 
     # ── VLC playback ─────────────────────────────────────────────────────────
-    vlc_network_cache: int = 5000   # ms – buffer for network streams
-    vlc_live_cache: int = 3000      # ms – buffer for live streams
+    vlc_network_cache: int = 3000   # ms – buffer for network streams
+    vlc_live_cache: int = 2000      # ms – buffer for live streams
 
     # ── Stream buffer management ─────────────────────────────────────────────
-    smart_buffer: bool = True       # proactive reconnect before stream ends
+    smart_buffer: bool = False      # optional stall diagnostics (no forced reconnect)
 
     # ── Audio ─────────────────────────────────────────────────────────────────
     audio_enabled: bool = True
+    single_mode_disconnect_others: bool = True
 
     # ── DRM / Encryption ─────────────────────────────────────────────────────
     # CENC static key (hex).  M3UPT key: a2226def4bc8f249de2daf36b7c12b1e
@@ -64,7 +65,8 @@ def load_config() -> Config:
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             known = Config.__dataclass_fields__
-            return Config(**{k: v for k, v in data.items() if k in known})
+            cfg = Config(**{k: v for k, v in data.items() if k in known})
+            return cfg
         except Exception:
             pass
     return Config()

@@ -198,8 +198,6 @@ def main() -> None:
     vlc_args = [
         "--quiet",
         "--no-video-title-show",
-        "--no-drop-late-frames",    # don't drop frames to maintain sync
-        "--no-skip-frames",         # don't skip reference frames
     ]
     if sys.platform == "darwin":
         vlc_args.append("--avcodec-hw=videotoolbox")
