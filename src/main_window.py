@@ -966,9 +966,13 @@ class MainWindow(QMainWindow):
             # Disable upscale enhance when leaving fullscreen.
             if 0 <= self._active_index < len(self._widgets):
                 self._widgets[self._active_index].set_upscale("off")
+            # Restore hand cursor for all widgets in grid mode.
+            for w in self._widgets:
+                w.setCursor(Qt.CursorShape.PointingHandCursor)
             self.statusBar().show()
             self._rebuild_grid()
             self._stack.setCurrentIndex(1)
+            self._apply_single_view_connection_policy()
 
     def _on_stream_context_menu(self, index: int, pos) -> None:
         menu = QMenu(self)
@@ -1094,9 +1098,8 @@ class MainWindow(QMainWindow):
     def _apply_single_view_connection_policy(self) -> None:
         if not self._widgets:
             return
-        disconnect_others = (
-            not self._grid_mode and self._cfg.single_mode_disconnect_others
-        )
+        # In single view, always disconnect other streams.
+        disconnect_others = not self._grid_mode
         for i, w in enumerate(self._widgets):
             if w._is_detached:
                 continue
@@ -1132,11 +1135,13 @@ class MainWindow(QMainWindow):
         target.embed_player()
         target.set_border_visible(False)  # no border in single-stream view
         target.set_controls_visible(False)  # hide controls; shown on hover
+        target.setCursor(Qt.CursorShape.ArrowCursor)
         if self._cfg.upscale_preset != "off":
             target.set_upscale(self._cfg.upscale_preset)
         self.statusBar().hide()
         self._cursor_timer.start()  # start hide-cursor countdown
         self._stack.setCurrentIndex(0)
+        self._apply_single_view_connection_policy()
 
     def _toggle_grid(self) -> None:
         self._grid_mode = not self._grid_mode

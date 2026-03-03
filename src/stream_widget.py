@@ -95,7 +95,7 @@ class StreamWidget(QWidget):
         self._quality_url: str | None = None
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)  # grid mode default
 
         # ── Layout ───────────────────────────────────────────────────────────
         root = QVBoxLayout(self)
@@ -256,15 +256,13 @@ class StreamWidget(QWidget):
         except Exception:
             pass
 
-    def play_url(self, url: str, options: list[str] | None = None,
-                 seamless: bool = False) -> None:
+    def play_url(self, url: str, options: list[str] | None = None) -> None:
         if self._released:
             return
-        if not seamless:
-            try:
-                self._player.stop()
-            except Exception:
-                pass
+        try:
+            self._player.stop()
+        except Exception:
+            pass
         try:
             media = self._vlc_instance.media_new(url)
             if options:
@@ -272,8 +270,9 @@ class StreamWidget(QWidget):
                     media.add_option(opt)
             self._media = media
             self._player.set_media(media)
-            if not seamless:
-                self.embed_player()
+            self.embed_player()
+            # Start muted — capture_loop will unmute the active stream.
+            self._player.audio_set_mute(True)
             if not self._user_paused:
                 self._player.play()
                 self._btn_play.setText("⏸")

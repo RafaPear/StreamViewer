@@ -146,9 +146,6 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                 retry_delay = min(retry_delay * 2, cfg.max_retry_delay)
                 continue
 
-            _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
-            QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
-
             logger.info("[%s] starting VLC playback (attempt %d)", name, attempt)
 
             started = False
@@ -191,6 +188,9 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                     if not started:
                         started = True
                         _safe(widget.hide_status)
+                        _safe(widget.set_audio_active, widget._active and cfg.audio_enabled)
+                        QTimer.singleShot(500, lambda: _safe(widget.reapply_audio))
+                        _safe(widget.prefetch_variants)
                         retry_delay = cfg.retry_delay
                         attempt = 0
                         logger.info("[%s] playback started", name)
