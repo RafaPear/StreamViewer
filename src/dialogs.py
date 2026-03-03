@@ -386,22 +386,31 @@ class SettingsDialog(QDialog):
         gf = QFormLayout(grp)
 
         self._net_cache = QSpinBox()
-        self._net_cache.setRange(500, 10000)
+        self._net_cache.setRange(500, 30000)
         self._net_cache.setSingleStep(500)
         self._net_cache.setValue(self._cfg.vlc_network_cache)
         self._net_cache.setSuffix(" ms")
         gf.addRow("Network buffer:", self._net_cache)
 
         self._live_cache = QSpinBox()
-        self._live_cache.setRange(200, 5000)
+        self._live_cache.setRange(200, 30000)
         self._live_cache.setSingleStep(200)
         self._live_cache.setValue(self._cfg.vlc_live_cache)
         self._live_cache.setSuffix(" ms")
         gf.addRow("Live stream buffer:", self._live_cache)
 
+        self._smart_buffer = QCheckBox("Smart buffer management (recommended)")
+        self._smart_buffer.setChecked(self._cfg.smart_buffer)
+        self._smart_buffer.setToolTip(
+            "Detects network stalls early and reconnects proactively\n"
+            "while the buffer still has data, avoiding visible drops."
+        )
+        gf.addRow(self._smart_buffer)
+
         buf_note = QLabel(
             "Higher values improve stability but add latency.\n"
-            "VLC handles decoding with hardware acceleration."
+            "Smart buffer adds a few seconds of latency but prevents\n"
+            "most visible drops by reconnecting before the buffer runs out."
         )
         buf_note.setWordWrap(True)
         buf_note.setStyleSheet("color: gray; font-size: 11px;")
@@ -480,6 +489,7 @@ class SettingsDialog(QDialog):
         self._cfg.audio_enabled = self._audio_enabled.isChecked()
         self._cfg.vlc_network_cache = self._net_cache.value()
         self._cfg.vlc_live_cache = self._live_cache.value()
+        self._cfg.smart_buffer = self._smart_buffer.isChecked()
         self._cfg.cenc_decryption_key = self._cenc_key.text().strip()
         self._cfg.upscale_preset = self._upscale_combo.currentData()
         self.accept()

@@ -49,6 +49,8 @@ _BUFFER_SILENT = 1.5
 _BUFFER_WARN = 5.0
 # Seconds to confirm Ended state before acting (filters transient flickers).
 _ENDED_CONFIRM = 0.6
+# Smart buffer: seconds of no new bytes before proactive reconnect.
+_SMART_STALL_SECS = 3.0
 
 # Break-reason flags (why the inner monitoring loop exited).
 _REASON_RESTART = "restart"      # user / settings triggered restart
@@ -186,6 +188,10 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
             last_time = -1
             terminal_ticks = 0
             break_reason = _REASON_ERROR
+            # Smart buffer: track network read_bytes to detect stalls early.
+            smart = cfg.smart_buffer
+            last_read_bytes = -1
+            read_stall_ticks = 0
 
             # ── Inner monitoring loop ─────────────────────────────────────
             while True:
@@ -239,6 +245,31 @@ async def capture_loop(widget, loop, cfg: Config) -> None:
                         _safe(widget.show_status, "Stream stalled", "warn")
                         break_reason = _REASON_ERROR
                         break
+
+                    # Smart buffer: detect network stall via read_bytes.
+                    # If no new bytes arrive for _SMART_STALL_SECS while
+                    # VLC still reports Playing, the connection is dying —
+                    # reconnect now while the buffer still has data.
+                    if smart and widget._media is not None:
+                        try:
+                            stats = vlc.MediaStats()
+                            if widget._media.get_stats(stats):
+                                rb = stats.read_bytes
+                                if rb == last_read_bytes and last_read_bytes >= 0:
+                                    read_stall_ticks += 1
+                                else:
+                                    read_stall_ticks = 0
+                                last_read_bytes = rb
+                                if read_stall_ticks * _POLL_INTERVAL >= _SMART_STALL_SECS:
+                                    logger.info(
+                                        "[%s] smart buffer: network stall (no new bytes for %.1fs), "
+                                        "reconnecting proactively",
+                                        name, read_stall_ticks * _POLL_INTERVAL,
+                                    )
+                                    break_reason = _REASON_ENDED
+                                    break
+                        except Exception:
+                            pass
 
                 # ── Buffering ─────────────────────────────────────────────
                 elif state == vlc.State.Buffering:

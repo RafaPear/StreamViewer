@@ -768,6 +768,7 @@ class MainWindow(QMainWindow):
             "cenc_decryption_key": self._cfg.cenc_decryption_key,
             "upscale_preset": self._cfg.upscale_preset,
             "audio_enabled": self._cfg.audio_enabled,
+            "smart_buffer": self._cfg.smart_buffer,
         }
         dlg = SettingsDialog(self._cfg, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -778,6 +779,7 @@ class MainWindow(QMainWindow):
             or old["vlc_live_cache"] != self._cfg.vlc_live_cache
             or old["cenc_decryption_key"] != self._cfg.cenc_decryption_key
             or old["upscale_preset"] != self._cfg.upscale_preset
+            or old["smart_buffer"] != self._cfg.smart_buffer
         )
 
         for w in self._widgets:

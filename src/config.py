@@ -26,6 +26,9 @@ class Config:
     vlc_network_cache: int = 5000   # ms – buffer for network streams
     vlc_live_cache: int = 3000      # ms – buffer for live streams
 
+    # ── Stream buffer management ─────────────────────────────────────────────
+    smart_buffer: bool = True       # proactive reconnect before stream ends
+
     # ── Audio ─────────────────────────────────────────────────────────────────
     audio_enabled: bool = True
 
