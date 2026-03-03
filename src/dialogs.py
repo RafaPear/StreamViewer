@@ -446,6 +446,7 @@ class SettingsDialog(QDialog):
             ("sharpen_light", "Lanczos + Sharpen (Light)"),
             ("sharpen_medium", "Lanczos + Sharpen (Medium)"),
             ("sharpen_strong", "Lanczos + Sharpen (Strong)"),
+            ("sharpen_ultra", "Lanczos + Sharpen (Ultra)"),
         ]
         for key, label in self._upscale_presets:
             self._upscale_combo.addItem(label, key)

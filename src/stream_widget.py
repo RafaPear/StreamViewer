@@ -342,6 +342,7 @@ class StreamWidget(QWidget):
         "sharpen_light": "Sharpen (Light)",
         "sharpen_medium": "Sharpen (Medium)",
         "sharpen_strong": "Sharpen (Strong)",
+        "sharpen_ultra": "Sharpen (Ultra)",
     }
 
     def set_upscale(self, preset: str) -> None:
